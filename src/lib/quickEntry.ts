@@ -22,12 +22,15 @@ function cleanAmount(value?: string | null) {
 function smsDate(text: string) {
   const full = text.match(/(20\d{2})[年/-](\d{1,2})[月/-](\d{1,2})日?\s*(\d{1,2})[:：](\d{2})/)
   const short = text.match(/(\d{1,2})月(\d{1,2})日?\s*(\d{1,2})[:：](\d{2})/)
+  const timeOnly = text.match(/(?:活期|账户|卡|于)?\s*(\d{1,2})[:：](\d{2})(?::\d{2})?\s*(?:取出|支出|消费|支付|交易)/)
   const now = new Date()
   const parts = full
     ? [Number(full[1]), Number(full[2]), Number(full[3]), Number(full[4]), Number(full[5])]
     : short
       ? [now.getFullYear(), Number(short[1]), Number(short[2]), Number(short[3]), Number(short[4])]
-      : undefined
+      : timeOnly
+        ? [now.getFullYear(), now.getMonth() + 1, now.getDate(), Number(timeOnly[1]), Number(timeOnly[2])]
+        : undefined
   if (!parts) return undefined
   const value = new Date(parts[0]!, parts[1]! - 1, parts[2]!, parts[3]!, parts[4]!)
   return Number.isNaN(value.getTime()) ? undefined : value.toISOString()
@@ -37,20 +40,24 @@ function smsDate(text: string) {
 export function parseBankSms(text: string): QuickEntryPrefill {
   const normalized = text.replace(/\s+/g, ' ').trim()
   const amountPatterns = [
+    /(?:取出|支出)\s*([\d,]+(?:\.\d{1,2})?)/,
     /(?:消费|支付|支出|交易|扣款)[^\d]{0,12}(?:人民币|RMB|CNY|￥|¥)?\s*([\d,]+(?:\.\d{1,2})?)/i,
     /(?:人民币|RMB|CNY|￥|¥)\s*([\d,]+(?:\.\d{1,2})?)/i,
     /金额[^\d]{0,6}([\d,]+(?:\.\d{1,2})?)/
   ]
   const amount = amountPatterns.map(pattern => normalized.match(pattern)?.[1]).find(Boolean)
   const merchantPatterns = [
+    /\[([^\]]{2,32})\]/,
     /(?:商户|商家|交易对方|收款方|支付给)[：:\s]*([^，,。；;]{2,32})/,
-    /(?:在|于)[：:\s]*([^，,。；;]{2,32}?)(?:消费|支付|交易)/
+    /\d{1,2}[:：]\d{2}(?::\d{2})?\s*([^，,。；;]{2,32}?)(?:支出|消费|支付|交易)/,
+    /(?:在|于)[：:\s]*([^，,。；;]{2,32}?)(?:支出|消费|支付|交易)/
   ]
   const merchant = merchantPatterns.map(pattern => normalized.match(pattern)?.[1]?.trim()).find(Boolean)
   const isRefund = /退款|退货/.test(normalized)
   const isIncome = !isRefund && /收入|入账|转入/.test(normalized) && !/支出|消费|扣款/.test(normalized)
+  const bankName = normalized.match(/【([^】]+银行)】/)?.[1]
   return {
-    amount: cleanAmount(amount), account: 'bank', type: isRefund ? 'refund' : isIncome ? 'income' : 'expense',
+    amount: cleanAmount(amount), account: bankName ?? 'bank', type: isRefund ? 'refund' : isIncome ? 'income' : 'expense',
     merchant: merchant?.replace(/(?:余额|可用余额).*$/, '').trim(), note: normalized,
     occurredAt: smsDate(normalized), source: 'bank'
   }

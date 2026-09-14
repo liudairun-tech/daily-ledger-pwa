@@ -17,4 +17,16 @@ describe('快捷录入链接', () => {
   it('不会把余额当成交易金额', () => {
     expect(parseBankSms('您尾号1234卡支付人民币12.00元，余额888.00元')).toMatchObject({ amount: '12.00' })
   })
+
+  it('解析浦发银行取出格式，不把时间或余额当金额', () => {
+    expect(parseBankSms('您尾号9986卡人民币活期19:18取出16.00[网上支付-财付通]，可用余额：1,443.78元。【浦发银行】')).toMatchObject({
+      amount: '16.00', account: '浦发银行', merchant: '网上支付-财付通', type: 'expense'
+    })
+  })
+
+  it('解析建设银行 ETC 支出格式', () => {
+    expect(parseBankSms('【建设银行】您账户5239于8月24日12:12:43ETC通行费支出8.27元,可用余额2947.79元。')).toMatchObject({
+      amount: '8.27', account: '建设银行', merchant: 'ETC通行费', type: 'expense'
+    })
+  })
 })
