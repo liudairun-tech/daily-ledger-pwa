@@ -1,0 +1,341 @@
+import { lazy, Suspense, useEffect, useRef, useState, type FormEvent } from 'react'
+import { useLiveQuery } from 'dexie-react-hooks'
+import { db, ensureSeedData, noteDataChange } from './db'
+import type { AccountType, Category, GenericColumnMap, ImportCandidate, LedgerTransaction, TransactionType } from './types'
+import { dateTimeLocalValue, downloadBlob, localDateKey, monthKey, transactionImpact, typeLabel, yuan } from './lib/format'
+import { makeFingerprint } from './lib/fingerprint'
+import { candidatesFromOcr, guessCategory, hashBuffer, parseStatement, rowsToCandidates, type ParsedFile } from './lib/importers'
+import { markDuplicates } from './lib/dedupe'
+import { decryptBackup, encryptBackup, readAllData, restoreAllData, transactionsCsv, type EncryptedBackup } from './lib/backup'
+
+const MonthBars = lazy(() => import('./components/Charts').then(module => ({ default: module.MonthBars })))
+const SpendingPie = lazy(() => import('./components/Charts').then(module => ({ default: module.SpendingPie })))
+
+type Route = 'home' | 'transactions' | 'add' | 'import' | 'settings'
+const navItems: Array<{ route: Route; icon: string; label: string }> = [
+  { route: 'home', icon: '⌂', label: '首页' }, { route: 'transactions', icon: '≡', label: '流水' },
+  { route: 'add', icon: '+', label: '记账' }, { route: 'import', icon: '⇩', label: '导入' }, { route: 'settings', icon: '⚙', label: '设置' }
+]
+
+function currentRoute(): Route {
+  const value = location.hash.replace(/^#\/?/, '').split('?')[0]
+  return navItems.some(item => item.route === value) ? value as Route : 'home'
+}
+
+function go(route: Route) { location.hash = `/${route}` }
+
+export default function App() {
+  const [route, setRoute] = useState<Route>(currentRoute())
+  const [ready, setReady] = useState(false)
+  useEffect(() => { void ensureSeedData().then(() => setReady(true)) }, [])
+  useEffect(() => {
+    const change = () => setRoute(currentRoute())
+    addEventListener('hashchange', change)
+    if (!location.hash) go('home')
+    return () => removeEventListener('hashchange', change)
+  }, [])
+  if (!ready) return <div className="splash"><img src="./icon.svg" alt="" /><strong>每日账本</strong><span>正在打开你的本地账本…</span></div>
+  return <div className="app-shell">
+    <main>
+      {route === 'home' && <HomePage />}
+      {route === 'transactions' && <TransactionsPage />}
+      {route === 'add' && <TransactionForm onDone={() => go('transactions')} />}
+      {route === 'import' && <ImportPage />}
+      {route === 'settings' && <SettingsPage />}
+    </main>
+    <nav className="bottom-nav" aria-label="主导航">
+      {navItems.map(item => <button key={item.route} className={route === item.route ? 'active' : ''} onClick={() => go(item.route)}>
+        <span className={item.route === 'add' ? 'add-icon' : ''}>{item.icon}</span><small>{item.label}</small>
+      </button>)}
+    </nav>
+  </div>
+}
+
+function PageHeader({ eyebrow, title, action }: { eyebrow?: string; title: string; action?: React.ReactNode }) {
+  return <header className="page-header"><div>{eyebrow && <span>{eyebrow}</span>}<h1>{title}</h1></div>{action}</header>
+}
+
+function HomePage() {
+  const transactions = useLiveQuery(() => db.transactions.orderBy('occurredAt').reverse().toArray(), []) ?? []
+  const categories = useLiveQuery(() => db.categories.toArray(), []) ?? []
+  const today = localDateKey(new Date()), month = monthKey(new Date())
+  const todayItems = transactions.filter(t => localDateKey(t.occurredAt) === today)
+  const monthItems = transactions.filter(t => monthKey(t.occurredAt) === month)
+  const sum = (items: LedgerTransaction[], types: TransactionType[]) => items.filter(t => types.includes(t.type)).reduce((n, t) => n + t.amountCents, 0)
+  const expense = sum(monthItems, ['expense']) - sum(monthItems, ['refund'])
+  const income = sum(monthItems, ['income'])
+  const changed = useLiveQuery(() => db.settings.get('changesSinceBackup'), [])
+  const lastBackup = useLiveQuery(() => db.settings.get('lastBackupAt'), [])
+  const needsBackup = Number(changed?.value ?? 0) >= 50 || !lastBackup?.value || Date.now() - new Date(lastBackup.value).getTime() > 7 * 86_400_000
+  return <div className="page home-page">
+    <PageHeader eyebrow={new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }).format(new Date())} title="今天，记清每一笔" action={<button className="avatar" onClick={() => go('settings')}>账</button>} />
+    {needsBackup && transactions.length > 0 && <button className="notice" onClick={() => go('settings')}>你的账本该备份了 <b>去备份 →</b></button>}
+    <section className="balance-card">
+      <span>本月结余</span><strong>{yuan(income - expense)}</strong>
+      <div><p><i className="dot income" />收入 <b>{yuan(income)}</b></p><p><i className="dot expense" />支出 <b>{yuan(expense)}</b></p></div>
+    </section>
+    <div className="quick-grid">
+      <button onClick={() => go('add')}><span>＋</span><b>快速记账</b><small>手工记录一笔</small></button>
+      <button onClick={() => go('import')}><span>⌁</span><b>识别账单</b><small>截图或文件导入</small></button>
+    </div>
+    <section className="section-card"><div className="section-title"><h2>近 7 日趋势</h2><span>收入与支出</span></div><Suspense fallback={<div className="empty-chart">正在准备图表…</div>}><MonthBars transactions={transactions} /></Suspense></section>
+    <section className="section-card"><div className="section-title"><h2>本月花到哪里</h2><span>{monthItems.length} 笔</span></div><Suspense fallback={<div className="empty-chart">正在准备图表…</div>}><SpendingPie transactions={monthItems} categories={categories} /></Suspense></section>
+    <section className="section-card"><div className="section-title"><h2>今日流水</h2><button onClick={() => go('transactions')}>查看全部</button></div>
+      <TransactionList transactions={todayItems.slice(0, 5)} categories={categories} compact />
+    </section>
+  </div>
+}
+
+function TransactionList({ transactions, categories, compact = false, onEdit }: { transactions: LedgerTransaction[]; categories: Category[]; compact?: boolean; onEdit?: (item: LedgerTransaction) => void }) {
+  const categoryMap = new Map(categories.map(c => [c.id, c]))
+  if (!transactions.length) return <div className="empty-state"><span>☁</span><b>还没有记录</b><small>记下第一笔，趋势会从这里开始</small></div>
+  return <div className="transaction-list">{transactions.map(item => {
+    const category = categoryMap.get(item.categoryId ?? '')
+    const positive = transactionImpact(item) >= 0
+    return <button className="transaction-row" key={item.id} onClick={() => onEdit?.(item)}>
+      <span className="category-icon" style={{ background: `${category?.color ?? '#64748b'}1d` }}>{item.type === 'transfer' ? '⇄' : category?.emoji ?? '•'}</span>
+      <span className="transaction-copy"><b>{item.merchant || typeLabel[item.type]}</b><small>{category?.name ?? typeLabel[item.type]} · {new Date(item.occurredAt).toLocaleString('zh-CN', compact ? { hour: '2-digit', minute: '2-digit' } : { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</small></span>
+      <strong className={positive ? 'money-positive' : ''}>{positive ? '+' : '−'}{yuan(item.amountCents).replace('¥', '')}</strong>
+    </button>
+  })}</div>
+}
+
+function TransactionsPage() {
+  const all = useLiveQuery(() => db.transactions.orderBy('occurredAt').reverse().toArray(), []) ?? []
+  const categories = useLiveQuery(() => db.categories.toArray(), []) ?? []
+  const accounts = useLiveQuery(() => db.accounts.toArray(), []) ?? []
+  const [query, setQuery] = useState(''), [account, setAccount] = useState(''), [source, setSource] = useState('')
+  const [editing, setEditing] = useState<LedgerTransaction>()
+  const filtered = all.filter(item => (!query || `${item.merchant}${item.note}`.toLowerCase().includes(query.toLowerCase())) && (!account || item.accountId === account) && (!source || item.source === source))
+  const grouped = filtered.reduce((result, item) => {
+    const key = localDateKey(item.occurredAt)
+    result.set(key, [...(result.get(key) ?? []), item])
+    return result
+  }, new Map<string, LedgerTransaction[]>())
+  return <div className="page">
+    <PageHeader eyebrow={`${all.length} 笔已确认流水`} title="全部流水" action={<button className="circle-button" onClick={() => go('add')}>＋</button>} />
+    <div className="search-row"><input value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索商户或备注" /></div>
+    <div className="filter-row">
+      <select value={account} onChange={e => setAccount(e.target.value)}><option value="">全部账户</option>{accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
+      <select value={source} onChange={e => setSource(e.target.value)}><option value="">全部来源</option><option value="manual">手工</option><option value="alipay">支付宝</option><option value="wechat">微信</option><option value="bank">银行</option><option value="ocr">截图</option></select>
+    </div>
+    {[...grouped.entries()].map(([day, items]) => <section className="day-group" key={day}><h2>{day} <span>{items.length} 笔</span></h2><TransactionList transactions={items} categories={categories} onEdit={setEditing} /></section>)}
+    {!filtered.length && <TransactionList transactions={[]} categories={categories} />}
+    {editing && <div className="modal"><div className="modal-card"><TransactionForm initial={editing} onDone={() => setEditing(undefined)} /></div></div>}
+  </div>
+}
+
+interface FormState { type: TransactionType; amount: string; accountId: string; targetAccountId: string; categoryId: string; merchant: string; note: string; occurredAt: string }
+function TransactionForm({ initial, onDone }: { initial?: LedgerTransaction; onDone: () => void }) {
+  const accounts = useLiveQuery(() => db.accounts.filter(a => !a.inactive).toArray(), []) ?? []
+  const categories = useLiveQuery(() => db.categories.filter(c => !c.archived).toArray(), []) ?? []
+  const [form, setForm] = useState<FormState>({
+    type: initial?.type ?? 'expense', amount: initial ? (initial.amountCents / 100).toFixed(2) : '', accountId: initial?.accountId ?? '',
+    targetAccountId: initial?.targetAccountId ?? '', categoryId: initial?.categoryId ?? '', merchant: initial?.merchant ?? '', note: initial?.note ?? '', occurredAt: dateTimeLocalValue(initial?.occurredAt)
+  })
+  const [error, setError] = useState('')
+  useEffect(() => { if (!form.accountId && accounts[0]) setForm(value => ({ ...value, accountId: accounts[0]!.id })) }, [accounts, form.accountId])
+  const availableCategories = categories.filter(c => c.kind === (form.type === 'income' ? 'income' : 'expense'))
+  const patch = (value: Partial<FormState>) => setForm(previous => ({ ...previous, ...value }))
+  async function save(event: FormEvent) {
+    event.preventDefault()
+    const amountCents = Math.round(Number(form.amount) * 100)
+    if (!Number.isFinite(amountCents) || amountCents <= 0) return setError('请输入有效金额')
+    if (!form.accountId) return setError('请选择账户')
+    if (form.type === 'transfer' && (!form.targetAccountId || form.targetAccountId === form.accountId)) return setError('请选择不同的转入账户')
+    const now = new Date().toISOString(), occurredAt = new Date(form.occurredAt).toISOString()
+    const item: LedgerTransaction = {
+      id: initial?.id ?? crypto.randomUUID(), type: form.type, amountCents, currency: 'CNY', occurredAt,
+      merchant: form.merchant.trim() || typeLabel[form.type], note: form.note.trim(), accountId: form.accountId,
+      targetAccountId: form.type === 'transfer' ? form.targetAccountId : undefined, categoryId: form.type === 'transfer' ? undefined : form.categoryId || guessCategory(form.merchant, form.note, form.type),
+      source: initial?.source ?? 'manual', externalId: initial?.externalId, importBatchId: initial?.importBatchId,
+      fingerprint: makeFingerprint({ occurredAt, amountCents, type: form.type, merchant: form.merchant, accountId: form.accountId }),
+      status: 'confirmed', manuallyEdited: Boolean(initial), createdAt: initial?.createdAt ?? now, updatedAt: now
+    }
+    await db.transactions.put(item); await noteDataChange(); onDone()
+  }
+  async function remove() {
+    if (!initial || !confirm('确定删除这笔流水吗？')) return
+    await db.transactions.delete(initial.id); await noteDataChange(); onDone()
+  }
+  return <div className="page form-page">
+    <PageHeader eyebrow={initial ? '修改已确认流水' : '金额优先，快速完成'} title={initial ? '编辑流水' : '记一笔'} action={initial ? <button className="text-danger" onClick={remove}>删除</button> : undefined} />
+    <form onSubmit={save}>
+      <div className="segmented">{(['expense', 'income', 'refund', 'transfer'] as TransactionType[]).map(type => <button type="button" key={type} className={form.type === type ? 'selected' : ''} onClick={() => patch({ type, categoryId: '' })}>{typeLabel[type]}</button>)}</div>
+      <label className="amount-field"><span>¥</span><input inputMode="decimal" autoFocus={!initial} value={form.amount} onChange={e => patch({ amount: e.target.value.replace(/[^0-9.]/g, '') })} placeholder="0.00" /></label>
+      <div className="form-card">
+        <label><span>账户</span><select value={form.accountId} onChange={e => patch({ accountId: e.target.value })}>{accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
+        {form.type === 'transfer' && <label><span>转入</span><select value={form.targetAccountId} onChange={e => patch({ targetAccountId: e.target.value })}><option value="">请选择</option>{accounts.filter(a => a.id !== form.accountId).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>}
+        {form.type !== 'transfer' && <label><span>分类</span><select value={form.categoryId} onChange={e => patch({ categoryId: e.target.value })}><option value="">自动判断</option>{availableCategories.map(c => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}</select></label>}
+        <label><span>商户</span><input value={form.merchant} onChange={e => patch({ merchant: e.target.value })} placeholder="例如：早餐店" /></label>
+        <label><span>时间</span><input type="datetime-local" value={form.occurredAt} onChange={e => patch({ occurredAt: e.target.value })} /></label>
+        <label><span>备注</span><input value={form.note} onChange={e => patch({ note: e.target.value })} placeholder="可选" /></label>
+      </div>
+      {error && <p className="error-text">{error}</p>}
+      <div className="form-actions">{initial && <button type="button" className="secondary" onClick={onDone}>取消</button>}<button className="primary" type="submit">{initial ? '保存修改' : '确认记账'}</button></div>
+    </form>
+  </div>
+}
+
+function ImportPage() {
+  const accounts = useLiveQuery(() => db.accounts.filter(a => !a.inactive).toArray(), []) ?? []
+  const categories = useLiveQuery(() => db.categories.filter(c => !c.archived).toArray(), []) ?? []
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [busy, setBusy] = useState('')
+  const [message, setMessage] = useState('')
+  const [parsed, setParsed] = useState<ParsedFile>()
+  const [fileMeta, setFileMeta] = useState<{ name: string; hash: string; source: 'alipay' | 'wechat' | 'bank' | 'ocr' }>()
+  const [accountId, setAccountId] = useState('account-alipay')
+  const [map, setMap] = useState<GenericColumnMap>({ date: '', amount: '' })
+  const [candidates, setCandidates] = useState<ImportCandidate[]>([])
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+
+  async function chooseFile(file?: File) {
+    if (!file) return
+    setMessage(''); setCandidates([]); setParsed(undefined)
+    const hash = await hashBuffer(await file.arrayBuffer())
+    if (await db.importBatches.where('fileHash').equals(hash).first()) { setMessage('这份文件已经导入过，无需重复处理。'); return }
+    if (file.type.startsWith('image/')) {
+      setBusy('正在本机识别图片，首次使用需下载中文识别模型…')
+      try {
+        const { createWorker } = await import('tesseract.js')
+        const worker = await createWorker('chi_sim+eng', undefined, { logger: status => { if (status.status === 'recognizing text') setBusy(`正在识别文字 ${Math.round(status.progress * 100)}%`) } })
+        const result = await worker.recognize(file)
+        await worker.terminate()
+        const sourceAccount = accounts.find(a => a.id === accountId)?.id ?? accounts[0]?.id ?? ''
+        const marked = await markDuplicates(candidatesFromOcr(result.data.text, sourceAccount).map(c => ({ ...c, categoryId: guessCategory(c.merchant, c.note, c.type) })))
+        setFileMeta({ name: file.name, hash, source: 'ocr' }); setCandidates(marked); setSelected(new Set(marked.filter(c => c.state === 'ready').map(c => c.id)))
+      } catch (error) { setMessage(error instanceof Error ? error.message : '图片识别失败') } finally { setBusy('') }
+      return
+    }
+    setBusy('正在读取账单…')
+    try {
+      const result = await parseStatement(file)
+      const source = result.source === 'unknown' ? 'bank' : result.source
+      const matchingAccount = accounts.find(a => a.type === source)?.id ?? accounts[0]?.id ?? ''
+      setAccountId(matchingAccount); setParsed(result); setFileMeta({ name: file.name, hash, source })
+      if (result.source !== 'unknown') await prepareCandidates(result, matchingAccount)
+      else {
+        setMap({ date: result.headers.find(h => /日期|时间/.test(h)) ?? '', amount: result.headers.find(h => /金额|支出|收入/.test(h)) ?? '' })
+        setMessage('这是通用账单，请先映射日期和金额列。')
+      }
+    } catch (error) { setMessage(error instanceof Error ? error.message : '账单读取失败') } finally { setBusy('') }
+  }
+
+  async function prepareCandidates(sourceParsed = parsed, sourceAccount = accountId, customMap?: GenericColumnMap) {
+    if (!sourceParsed) return
+    const list = rowsToCandidates(sourceParsed, sourceAccount, customMap).map(c => ({ ...c, categoryId: guessCategory(c.merchant, c.note, c.type) }))
+    const marked = await markDuplicates(list)
+    setCandidates(marked); setSelected(new Set(marked.filter(c => c.state === 'ready').map(c => c.id))); setMessage('')
+  }
+
+  function updateCandidate(id: string, patch: Partial<ImportCandidate>) {
+    setCandidates(items => items.map(item => item.id === id ? { ...item, ...patch } : item))
+  }
+
+  async function confirmImport() {
+    if (!fileMeta) return
+    const chosen = candidates.filter(c => selected.has(c.id) && c.state !== 'exact-duplicate' && c.state !== 'invalid')
+    if (!chosen.length) return setMessage('没有选择可导入的记录')
+    const batchId = crypto.randomUUID(), now = new Date().toISOString()
+    const transactions: LedgerTransaction[] = chosen.map(item => ({
+      id: crypto.randomUUID(), type: item.type, amountCents: item.amountCents, currency: 'CNY', occurredAt: item.occurredAt,
+      merchant: item.merchant, note: item.note, categoryId: item.type === 'transfer' ? undefined : item.categoryId,
+      accountId: item.accountId ?? accountId, source: item.source, externalId: item.externalId, fingerprint: item.fingerprint,
+      importBatchId: batchId, status: 'confirmed', manuallyEdited: false, createdAt: now, updatedAt: now
+    }))
+    await db.transaction('rw', db.importBatches, db.importCandidates, db.transactions, async () => {
+      await db.importBatches.add({ id: batchId, source: fileMeta.source, fileName: fileMeta.name, fileHash: fileMeta.hash, importedAt: now, totalCount: candidates.length, importedCount: chosen.length, duplicateCount: candidates.filter(c => c.state.includes('duplicate')).length, errorCount: candidates.filter(c => c.state === 'invalid').length })
+      await db.importCandidates.bulkPut(candidates.map(c => ({ ...c, batchId, state: selected.has(c.id) ? 'imported' : c.state === 'ready' ? 'skipped' : c.state })))
+      await db.transactions.bulkAdd(transactions)
+    })
+    await noteDataChange(); setCandidates([]); setParsed(undefined); setFileMeta(undefined); setMessage(`已安全导入 ${chosen.length} 笔，重复和异常项未入账。`)
+  }
+
+  const headers = parsed?.headers ?? []
+  return <div className="page">
+    <PageHeader eyebrow="本机处理，不上传账单" title="智能导入" />
+    <section className="import-hero">
+      <div className="scan-orbit">⌁</div><h2>账单或支付截图</h2><p>支持支付宝、微信 CSV/TXT/ZIP，银行卡通用 CSV，以及照片和截图 OCR。</p>
+      <button className="primary" onClick={() => inputRef.current?.click()}>选择文件或照片</button>
+      <input ref={inputRef} hidden type="file" accept=".csv,.txt,.zip,text/csv,image/*" onChange={e => void chooseFile(e.target.files?.[0])} />
+    </section>
+    <div className="privacy-note"><b>隐私说明</b><span>图片和账单只在此设备处理。OCR 首次使用会下载语言模型，但不会上传图片。</span></div>
+    {busy && <div className="progress-card"><span className="spinner" />{busy}</div>}
+    {message && <div className="status-message">{message}</div>}
+    {parsed?.source === 'unknown' && candidates.length === 0 && <section className="section-card mapping-card"><div className="section-title"><h2>映射银行卡列</h2><span>{parsed.rows.length} 行</span></div>
+      {(['date', 'amount', 'direction', 'merchant', 'note', 'externalId'] as const).map(key => <label key={key}><span>{{ date: '日期 *', amount: '金额 *', direction: '收支方向', merchant: '商户/摘要', note: '备注', externalId: '流水号' }[key]}</span><select value={map[key] ?? ''} onChange={e => setMap(value => ({ ...value, [key]: e.target.value }))}><option value="">未选择</option>{headers.map(h => <option key={h} value={h}>{h}</option>)}</select></label>)}
+      <button className="primary" disabled={!map.date || !map.amount} onClick={() => void prepareCandidates(parsed, accountId, map)}>生成预览</button>
+    </section>}
+    {candidates.length > 0 && <section className="review-section">
+      <div className="review-head"><div><h2>确认导入</h2><p>{candidates.length} 条候选 · 已选 {selected.size} 条</p></div><select value={accountId} onChange={e => { setAccountId(e.target.value); setCandidates(items => items.map(c => ({ ...c, accountId: e.target.value }))) }}>{accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></div>
+      <div className="candidate-list">{candidates.map(candidate => <article className={`candidate ${candidate.state}`} key={candidate.id}>
+        <input type="checkbox" checked={selected.has(candidate.id)} disabled={candidate.state === 'invalid' || candidate.state === 'exact-duplicate'} onChange={e => setSelected(value => { const next = new Set(value); e.target.checked ? next.add(candidate.id) : next.delete(candidate.id); return next })} />
+        <div className="candidate-main"><div><input value={candidate.merchant} onChange={e => updateCandidate(candidate.id, { merchant: e.target.value })} /><strong>{yuan(candidate.amountCents)}</strong></div><small>{candidate.occurredAt ? new Date(candidate.occurredAt).toLocaleString('zh-CN') : '无日期'} · {typeLabel[candidate.type]} · 置信度 {Math.round(candidate.confidence * 100)}%</small>
+          <div className="candidate-fields"><select value={candidate.type} onChange={e => updateCandidate(candidate.id, { type: e.target.value as TransactionType })}>{(['expense', 'income', 'refund', 'transfer'] as TransactionType[]).map(t => <option key={t} value={t}>{typeLabel[t]}</option>)}</select><select value={candidate.categoryId ?? ''} onChange={e => updateCandidate(candidate.id, { categoryId: e.target.value })}>{categories.filter(c => c.kind === (candidate.type === 'income' ? 'income' : 'expense')).map(c => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}</select></div>
+          {candidate.issue && <em>{candidate.issue}</em>}
+        </div>
+      </article>)}</div>
+      <div className="sticky-confirm"><button className="primary" onClick={() => void confirmImport()}>确认导入 {selected.size} 笔</button></div>
+    </section>}
+    {!candidates.length && !busy && <section className="section-card tips"><h2>导入原则</h2><ol><li>相同文件不会重复导入</li><li>相同流水号自动拦截</li><li>同额近时交易需要你确认</li><li>还款、充值和转账不计收支</li></ol></section>}
+  </div>
+}
+
+function SettingsPage() {
+  const accounts = useLiveQuery(() => db.accounts.orderBy('createdAt').toArray(), []) ?? []
+  const categories = useLiveQuery(() => db.categories.toArray(), []) ?? []
+  const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? []
+  const lastBackup = useLiveQuery(() => db.settings.get('lastBackupAt'), [])
+  const restoreRef = useRef<HTMLInputElement>(null)
+  const [password, setPassword] = useState(''), [message, setMessage] = useState('')
+  const [newAccount, setNewAccount] = useState(''), [accountType, setAccountType] = useState<AccountType>('bank')
+  const [newCategory, setNewCategory] = useState('')
+
+  async function exportEncrypted() {
+    try {
+      const encrypted = await encryptBackup(await readAllData(), password)
+      downloadBlob(new Blob([JSON.stringify(encrypted)], { type: 'application/json' }), `每日账本-完整备份-${localDateKey(new Date())}.ledger`)
+      await db.settings.bulkPut([{ key: 'lastBackupAt', value: new Date().toISOString() }, { key: 'changesSinceBackup', value: '0' }]); setMessage('完整加密备份已生成，请保存到 iCloud Drive。')
+    } catch (error) { setMessage(error instanceof Error ? error.message : '备份失败') }
+  }
+  async function exportCsv() {
+    downloadBlob(new Blob(['\uFEFF', transactionsCsv(transactions, accounts, categories)], { type: 'text/csv;charset=utf-8' }), `每日账本-流水-${localDateKey(new Date())}.csv`)
+  }
+  async function restore(file?: File) {
+    if (!file || !password) return setMessage('请先输入备份密码')
+    if (!confirm('恢复会替换当前手机里的全部账本数据，是否继续？')) return
+    try {
+      const envelope = JSON.parse(await file.text()) as EncryptedBackup
+      await restoreAllData(await decryptBackup(envelope, password)); setMessage('恢复完成，账本数据已替换。')
+    } catch (error) { setMessage(error instanceof Error ? error.message : '恢复失败') }
+  }
+  async function addAccount() {
+    if (!newAccount.trim()) return
+    const now = new Date().toISOString(); await db.accounts.add({ id: crypto.randomUUID(), name: newAccount.trim(), type: accountType, openingBalanceCents: 0, openingDate: now, inactive: false, createdAt: now }); setNewAccount('')
+  }
+  async function addCategory() {
+    if (!newCategory.trim()) return
+    await db.categories.add({ id: crypto.randomUUID(), name: newCategory.trim(), emoji: '🏷️', color: '#64748b', kind: 'expense', archived: false }); setNewCategory('')
+  }
+  return <div className="page settings-page">
+    <PageHeader eyebrow="数据只属于你" title="设置与备份" />
+    <section className="section-card"><div className="section-title"><h2>完整加密备份</h2><span>{lastBackup?.value ? `上次 ${new Date(lastBackup.value).toLocaleDateString('zh-CN')}` : '尚未备份'}</span></div>
+      <p className="muted">密码不会保存；忘记密码将无法恢复。建议把 .ledger 文件保存到“文件”中的 iCloud Drive。</p>
+      <label className="standalone-label">备份密码（至少 8 个字符）<input type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="new-password" /></label>
+      <div className="button-pair"><button className="primary" onClick={() => void exportEncrypted()}>导出加密备份</button><button className="secondary" onClick={() => restoreRef.current?.click()}>恢复备份</button></div>
+      <input hidden ref={restoreRef} type="file" accept=".ledger,application/json" onChange={e => void restore(e.target.files?.[0])} />
+      <button className="link-button" onClick={exportCsv}>另存一份可阅读 CSV</button>
+      {message && <p className="status-message">{message}</p>}
+    </section>
+    <section className="section-card"><div className="section-title"><h2>账户</h2><span>{accounts.filter(a => !a.inactive).length} 个</span></div>
+      <div className="chip-list">{accounts.map(a => <button key={a.id} className={a.inactive ? 'muted-chip' : ''} onClick={() => void db.accounts.update(a.id, { inactive: !a.inactive })}>{a.name}<small>{a.inactive ? '已停用' : '使用中'}</small></button>)}</div>
+      <div className="inline-form"><input value={newAccount} onChange={e => setNewAccount(e.target.value)} placeholder="新账户名称" /><select value={accountType} onChange={e => setAccountType(e.target.value as AccountType)}><option value="bank">银行卡</option><option value="cash">现金</option><option value="other">其他</option></select><button onClick={() => void addAccount()}>添加</button></div>
+    </section>
+    <section className="section-card"><div className="section-title"><h2>支出分类</h2><span>{categories.filter(c => c.kind === 'expense' && !c.archived).length} 个</span></div>
+      <div className="chip-list">{categories.filter(c => c.kind === 'expense').map(c => <button key={c.id} className={c.archived ? 'muted-chip' : ''} onClick={() => void db.categories.update(c.id, { archived: !c.archived })}>{c.emoji} {c.name}<small>{c.archived ? '已隐藏' : '显示'}</small></button>)}</div>
+      <div className="inline-form"><input value={newCategory} onChange={e => setNewCategory(e.target.value)} placeholder="新分类名称" /><button onClick={() => void addCategory()}>添加</button></div>
+    </section>
+    <section className="section-card about-card"><h2>关于每日账本</h2><p>离线优先的个人收支 PWA。它不能读取支付宝、微信、银行卡或系统通知；自动化限定为账单解析、截图识别、分类建议和去重。</p><p><b>快速入口：</b>在 iPhone“快捷指令”中添加“打开 URL”，填写当前地址并以 <code>/#/add</code> 结尾，即可绑定 Siri 或操作按钮。</p></section>
+  </div>
+}
