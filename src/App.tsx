@@ -140,7 +140,8 @@ function TransactionForm({ initial, prefill, onDone }: { initial?: LedgerTransac
     if (form.accountId || !accounts[0]) return
     const requested = prefill?.account
     const matched = accounts.find(account => account.id === requested || account.type === requested || account.name === requested)
-    setForm(value => ({ ...value, accountId: (matched ?? accounts[0])!.id }))
+    const sourceFallback = accounts.find(account => account.type === prefill?.source)
+    setForm(value => ({ ...value, accountId: (matched ?? sourceFallback ?? accounts[0])!.id }))
   }, [accounts, form.accountId, prefill?.account])
   const availableCategories = categories.filter(c => c.kind === (form.type === 'income' ? 'income' : 'expense'))
   const patch = (value: Partial<FormState>) => setForm(previous => ({ ...previous, ...value }))
