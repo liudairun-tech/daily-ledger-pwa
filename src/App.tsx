@@ -7,6 +7,7 @@ import { makeFingerprint } from './lib/fingerprint'
 import { candidatesFromOcr, guessCategory, hashBuffer, parseStatement, rowsToCandidates, type ParsedFile } from './lib/importers'
 import { markDuplicates } from './lib/dedupe'
 import { decryptBackup, encryptBackup, readAllData, restoreAllData, transactionsCsv, type EncryptedBackup } from './lib/backup'
+import { readQuickEntryPrefill, type QuickEntryPrefill } from './lib/quickEntry'
 
 const MonthBars = lazy(() => import('./components/Charts').then(module => ({ default: module.MonthBars })))
 const SpendingPie = lazy(() => import('./components/Charts').then(module => ({ default: module.SpendingPie })))
@@ -26,10 +27,11 @@ function go(route: Route) { location.hash = `/${route}` }
 
 export default function App() {
   const [route, setRoute] = useState<Route>(currentRoute())
+  const [routeKey, setRouteKey] = useState(location.hash)
   const [ready, setReady] = useState(false)
   useEffect(() => { void ensureSeedData().then(() => setReady(true)) }, [])
   useEffect(() => {
-    const change = () => setRoute(currentRoute())
+    const change = () => { setRoute(currentRoute()); setRouteKey(location.hash) }
     addEventListener('hashchange', change)
     if (!location.hash) go('home')
     return () => removeEventListener('hashchange', change)
@@ -39,7 +41,7 @@ export default function App() {
     <main>
       {route === 'home' && <HomePage />}
       {route === 'transactions' && <TransactionsPage />}
-      {route === 'add' && <TransactionForm onDone={() => go('transactions')} />}
+      {route === 'add' && <TransactionForm key={routeKey} prefill={readQuickEntryPrefill()} onDone={() => go('transactions')} />}
       {route === 'import' && <ImportPage />}
       {route === 'settings' && <SettingsPage />}
     </main>
@@ -126,15 +128,20 @@ function TransactionsPage() {
 }
 
 interface FormState { type: TransactionType; amount: string; accountId: string; targetAccountId: string; categoryId: string; merchant: string; note: string; occurredAt: string }
-function TransactionForm({ initial, onDone }: { initial?: LedgerTransaction; onDone: () => void }) {
+function TransactionForm({ initial, prefill, onDone }: { initial?: LedgerTransaction; prefill?: QuickEntryPrefill; onDone: () => void }) {
   const accounts = useLiveQuery(() => db.accounts.filter(a => !a.inactive).toArray(), []) ?? []
   const categories = useLiveQuery(() => db.categories.filter(c => !c.archived).toArray(), []) ?? []
   const [form, setForm] = useState<FormState>({
-    type: initial?.type ?? 'expense', amount: initial ? (initial.amountCents / 100).toFixed(2) : '', accountId: initial?.accountId ?? '',
-    targetAccountId: initial?.targetAccountId ?? '', categoryId: initial?.categoryId ?? '', merchant: initial?.merchant ?? '', note: initial?.note ?? '', occurredAt: dateTimeLocalValue(initial?.occurredAt)
+    type: initial?.type ?? prefill?.type ?? 'expense', amount: initial ? (initial.amountCents / 100).toFixed(2) : prefill?.amount ?? '', accountId: initial?.accountId ?? '',
+    targetAccountId: initial?.targetAccountId ?? '', categoryId: initial?.categoryId ?? '', merchant: initial?.merchant ?? prefill?.merchant ?? '', note: initial?.note ?? prefill?.note ?? '', occurredAt: dateTimeLocalValue(initial?.occurredAt ?? prefill?.occurredAt)
   })
   const [error, setError] = useState('')
-  useEffect(() => { if (!form.accountId && accounts[0]) setForm(value => ({ ...value, accountId: accounts[0]!.id })) }, [accounts, form.accountId])
+  useEffect(() => {
+    if (form.accountId || !accounts[0]) return
+    const requested = prefill?.account
+    const matched = accounts.find(account => account.id === requested || account.type === requested || account.name === requested)
+    setForm(value => ({ ...value, accountId: (matched ?? accounts[0])!.id }))
+  }, [accounts, form.accountId, prefill?.account])
   const availableCategories = categories.filter(c => c.kind === (form.type === 'income' ? 'income' : 'expense'))
   const patch = (value: Partial<FormState>) => setForm(previous => ({ ...previous, ...value }))
   async function save(event: FormEvent) {
@@ -148,7 +155,7 @@ function TransactionForm({ initial, onDone }: { initial?: LedgerTransaction; onD
       id: initial?.id ?? crypto.randomUUID(), type: form.type, amountCents, currency: 'CNY', occurredAt,
       merchant: form.merchant.trim() || typeLabel[form.type], note: form.note.trim(), accountId: form.accountId,
       targetAccountId: form.type === 'transfer' ? form.targetAccountId : undefined, categoryId: form.type === 'transfer' ? undefined : form.categoryId || guessCategory(form.merchant, form.note, form.type),
-      source: initial?.source ?? 'manual', externalId: initial?.externalId, importBatchId: initial?.importBatchId,
+      source: initial?.source ?? prefill?.source ?? 'manual', externalId: initial?.externalId, importBatchId: initial?.importBatchId,
       fingerprint: makeFingerprint({ occurredAt, amountCents, type: form.type, merchant: form.merchant, accountId: form.accountId }),
       status: 'confirmed', manuallyEdited: Boolean(initial), createdAt: initial?.createdAt ?? now, updatedAt: now
     }
@@ -159,7 +166,7 @@ function TransactionForm({ initial, onDone }: { initial?: LedgerTransaction; onD
     await db.transactions.delete(initial.id); await noteDataChange(); onDone()
   }
   return <div className="page form-page">
-    <PageHeader eyebrow={initial ? '修改已确认流水' : '金额优先，快速完成'} title={initial ? '编辑流水' : '记一笔'} action={initial ? <button className="text-danger" onClick={remove}>删除</button> : undefined} />
+    <PageHeader eyebrow={initial ? '修改已确认流水' : prefill?.amount || prefill?.note ? '已自动填写，请核对后保存' : '金额优先，快速完成'} title={initial ? '编辑流水' : '记一笔'} action={initial ? <button className="text-danger" onClick={remove}>删除</button> : undefined} />
     <form onSubmit={save}>
       <div className="segmented">{(['expense', 'income', 'refund', 'transfer'] as TransactionType[]).map(type => <button type="button" key={type} className={form.type === type ? 'selected' : ''} onClick={() => patch({ type, categoryId: '' })}>{typeLabel[type]}</button>)}</div>
       <label className="amount-field"><span>¥</span><input inputMode="decimal" autoFocus={!initial} value={form.amount} onChange={e => patch({ amount: e.target.value.replace(/[^0-9.]/g, '') })} placeholder="0.00" /></label>
@@ -336,6 +343,7 @@ function SettingsPage() {
       <div className="chip-list">{categories.filter(c => c.kind === 'expense').map(c => <button key={c.id} className={c.archived ? 'muted-chip' : ''} onClick={() => void db.categories.update(c.id, { archived: !c.archived })}>{c.emoji} {c.name}<small>{c.archived ? '已隐藏' : '显示'}</small></button>)}</div>
       <div className="inline-form"><input value={newCategory} onChange={e => setNewCategory(e.target.value)} placeholder="新分类名称" /><button onClick={() => void addCategory()}>添加</button></div>
     </section>
-    <section className="section-card about-card"><h2>关于每日账本</h2><p>离线优先的个人收支 PWA。它不能读取支付宝、微信、银行卡或系统通知；自动化限定为账单解析、截图识别、分类建议和去重。</p><p><b>快速入口：</b>在 iPhone“快捷指令”中添加“打开 URL”，填写当前地址并以 <code>/#/add</code> 结尾，即可绑定 Siri 或操作按钮。</p></section>
+    <section className="section-card about-card"><h2>快捷指令入口</h2><p>操作按钮可打开带金额和账户的链接：<code>/#/add?amount=28.5&amp;account=wechat</code>。账户可填写 <code>alipay</code>、<code>wechat</code> 或 <code>bank</code>。</p><p>银行短信自动化可把短信正文作为 <code>sms</code> 参数传入；应用会在本机提取金额、商户和时间，并在保存前让你核对。</p></section>
+    <section className="section-card about-card"><h2>关于每日账本</h2><p>离线优先的个人收支 PWA。它不能直接读取支付宝、微信或其他 App 通知；快捷指令仅把你主动输入的内容或符合条件的银行短信交给应用。</p></section>
   </div>
 }
