@@ -1,0 +1,36 @@
+import { describe, expect, it } from 'vitest'
+import { candidatesFromOcr, guessCategory, rowsToCandidates, type ParsedFile } from './importers'
+import { parseAmountToCents } from './format'
+
+describe('金额和账单标准化', () => {
+  it('将人民币金额转换为整数分', () => {
+    expect(parseAmountToCents('￥1,234.56')).toBe(123456)
+    expect(parseAmountToCents('(18.20)')).toBe(1820)
+  })
+
+  it('解析微信账单并识别退款和转账', () => {
+    const parsed: ParsedFile = {
+      source: 'wechat', headers: ['交易时间', '交易对方', '商品', '收/支', '金额(元)', '当前状态', '交易单号'], text: '',
+      rows: [
+        { 交易时间: '2026-09-01 12:30:00', 交易对方: '午后咖啡', 商品: '拿铁', '收/支': '支出', '金额(元)': '28.00', 当前状态: '支付成功', 交易单号: 'wx-1' },
+        { 交易时间: '2026-09-02 09:00:00', 交易对方: '商店', 商品: '退款', '收/支': '收入', '金额(元)': '10', 当前状态: '已退款', 交易单号: 'wx-2' }
+      ]
+    }
+    const result = rowsToCandidates(parsed, 'account-wechat')
+    expect(result[0]).toMatchObject({ amountCents: 2800, type: 'expense', externalId: 'wx-1', state: 'ready' })
+    expect(result[1]?.type).toBe('refund')
+  })
+
+  it('把还款和充值识别为转账', () => {
+    const parsed: ParsedFile = { source: 'alipay', headers: [], text: '', rows: [{ 交易创建时间: '2026-09-01 10:00:00', 金额: '100', '收/支': '支出', 交易对方: '信用卡还款', 交易号: 'a-1' }] }
+    expect(rowsToCandidates(parsed, 'account-alipay')[0]?.type).toBe('transfer')
+  })
+})
+
+describe('分类和 OCR', () => {
+  it('按商户关键字建议分类', () => expect(guessCategory('地铁乘车码', '', 'expense')).toBe('cat-transport'))
+  it('从支付文字提取金额和日期', () => {
+    const [candidate] = candidatesFromOcr('付款成功\n星空咖啡\n￥36.80\n2026-09-12 08:30', 'account-alipay')
+    expect(candidate).toMatchObject({ amountCents: 3680, merchant: '星空咖啡', state: 'ready' })
+  })
+})
