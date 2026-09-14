@@ -29,4 +29,10 @@ describe('快捷录入链接', () => {
       amount: '8.27', account: '建设银行', merchant: 'ETC通行费', type: 'expense'
     })
   })
+
+  it('把招商银行向微信零钱充值识别为转账', () => {
+    expect(parseBankSms('【招商银行】您账户8221于09月14日23:30在财付通-微信支付-微信零钱充值账户快捷支付10.00元，余额3476.62')).toMatchObject({
+      amount: '10.00', account: '招商银行', merchant: '财付通-微信支付-微信零钱充值账户', type: 'transfer'
+    })
+  })
 })

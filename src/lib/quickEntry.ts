@@ -40,6 +40,7 @@ function smsDate(text: string) {
 export function parseBankSms(text: string): QuickEntryPrefill {
   const normalized = text.replace(/\s+/g, ' ').trim()
   const amountPatterns = [
+    /快捷支付\s*([\d,]+(?:\.\d{1,2})?)/,
     /(?:取出|支出)\s*([\d,]+(?:\.\d{1,2})?)/,
     /(?:消费|支付|支出|交易|扣款)[^\d]{0,12}(?:人民币|RMB|CNY|￥|¥)?\s*([\d,]+(?:\.\d{1,2})?)/i,
     /(?:人民币|RMB|CNY|￥|¥)\s*([\d,]+(?:\.\d{1,2})?)/i,
@@ -48,6 +49,7 @@ export function parseBankSms(text: string): QuickEntryPrefill {
   const amount = amountPatterns.map(pattern => normalized.match(pattern)?.[1]).find(Boolean)
   const merchantPatterns = [
     /\[([^\]]{2,32})\]/,
+    /在\s*([^，,。；;]{2,48}?)(?:快捷支付|支付)\s*[\d,]+(?:\.\d{1,2})?/,
     /(?:商户|商家|交易对方|收款方|支付给)[：:\s]*([^，,。；;]{2,32})/,
     /\d{1,2}[:：]\d{2}(?::\d{2})?\s*([^，,。；;]{2,32}?)(?:支出|消费|支付|交易)/,
     /(?:在|于)[：:\s]*([^，,。；;]{2,32}?)(?:支出|消费|支付|交易)/
@@ -55,9 +57,10 @@ export function parseBankSms(text: string): QuickEntryPrefill {
   const merchant = merchantPatterns.map(pattern => normalized.match(pattern)?.[1]?.trim()).find(Boolean)
   const isRefund = /退款|退货/.test(normalized)
   const isIncome = !isRefund && /收入|入账|转入/.test(normalized) && !/支出|消费|扣款/.test(normalized)
+  const isTransfer = /充值|提现|还款|账户互转/.test(normalized)
   const bankName = normalized.match(/【([^】]+银行)】/)?.[1]
   return {
-    amount: cleanAmount(amount), account: bankName ?? 'bank', type: isRefund ? 'refund' : isIncome ? 'income' : 'expense',
+    amount: cleanAmount(amount), account: bankName ?? 'bank', type: isRefund ? 'refund' : isTransfer ? 'transfer' : isIncome ? 'income' : 'expense',
     merchant: merchant?.replace(/(?:余额|可用余额).*$/, '').trim(), note: normalized,
     occurredAt: smsDate(normalized), source: 'bank'
   }
