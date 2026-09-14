@@ -160,6 +160,12 @@ function TransactionForm({ initial, prefill, onDone }: { initial?: LedgerTransac
       fingerprint: makeFingerprint({ occurredAt, amountCents, type: form.type, merchant: form.merchant, accountId: form.accountId }),
       status: 'confirmed', manuallyEdited: Boolean(initial), createdAt: initial?.createdAt ?? now, updatedAt: now
     }
+    if (!initial) {
+      const exact = await db.transactions.where('fingerprint').equals(item.fingerprint).first()
+      if (exact) return setError('这笔交易已经记录过，请勿重复保存')
+      const possible = await db.transactions.filter(existing => existing.amountCents === item.amountCents && existing.type === item.type && existing.source !== item.source && Math.abs(new Date(existing.occurredAt).getTime() - new Date(item.occurredAt).getTime()) <= 10 * 60_000).first()
+      if (possible && !confirm(`发现可能重复的记录：${possible.merchant} ${yuan(possible.amountCents)}。\n\n如果是同一笔付款，请点“取消”；只有确实是两笔交易时才点“确定”。`)) return
+    }
     await db.transactions.put(item); await noteDataChange(); onDone()
   }
   async function remove() {
@@ -249,7 +255,8 @@ function ImportPage() {
     const transactions: LedgerTransaction[] = chosen.map(item => ({
       id: crypto.randomUUID(), type: item.type, amountCents: item.amountCents, currency: 'CNY', occurredAt: item.occurredAt,
       merchant: item.merchant, note: item.note, categoryId: item.type === 'transfer' ? undefined : item.categoryId,
-      accountId: item.accountId ?? accountId, source: item.source, externalId: item.externalId, fingerprint: item.fingerprint,
+      accountId: item.accountId ?? accountId, source: item.source, externalId: item.externalId,
+      fingerprint: makeFingerprint({ occurredAt: item.occurredAt, amountCents: item.amountCents, type: item.type, merchant: item.merchant, accountId: item.accountId ?? accountId }),
       importBatchId: batchId, status: 'confirmed', manuallyEdited: false, createdAt: now, updatedAt: now
     }))
     await db.transaction('rw', db.importBatches, db.importCandidates, db.transactions, async () => {
@@ -280,7 +287,7 @@ function ImportPage() {
       <div className="candidate-list">{candidates.map(candidate => <article className={`candidate ${candidate.state}`} key={candidate.id}>
         <input type="checkbox" checked={selected.has(candidate.id)} disabled={candidate.state === 'invalid' || candidate.state === 'exact-duplicate'} onChange={e => setSelected(value => { const next = new Set(value); e.target.checked ? next.add(candidate.id) : next.delete(candidate.id); return next })} />
         <div className="candidate-main"><div><input value={candidate.merchant} onChange={e => updateCandidate(candidate.id, { merchant: e.target.value })} /><strong>{yuan(candidate.amountCents)}</strong></div><small>{candidate.occurredAt ? new Date(candidate.occurredAt).toLocaleString('zh-CN') : '无日期'} · {typeLabel[candidate.type]} · 置信度 {Math.round(candidate.confidence * 100)}%</small>
-          <div className="candidate-fields"><select value={candidate.type} onChange={e => updateCandidate(candidate.id, { type: e.target.value as TransactionType })}>{(['expense', 'income', 'refund', 'transfer'] as TransactionType[]).map(t => <option key={t} value={t}>{typeLabel[t]}</option>)}</select><select value={candidate.categoryId ?? ''} onChange={e => updateCandidate(candidate.id, { categoryId: e.target.value })}>{categories.filter(c => c.kind === (candidate.type === 'income' ? 'income' : 'expense')).map(c => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}</select></div>
+          <div className="candidate-fields"><select aria-label="交易类型" value={candidate.type} onChange={e => updateCandidate(candidate.id, { type: e.target.value as TransactionType })}>{(['expense', 'income', 'refund', 'transfer'] as TransactionType[]).map(t => <option key={t} value={t}>{typeLabel[t]}</option>)}</select><select aria-label="实际扣款账户" value={candidate.accountId ?? accountId} onChange={e => updateCandidate(candidate.id, { accountId: e.target.value })}>{accounts.map(account => <option key={account.id} value={account.id}>{account.name}</option>)}</select><select aria-label="分类" value={candidate.categoryId ?? ''} onChange={e => updateCandidate(candidate.id, { categoryId: e.target.value })}>{categories.filter(c => c.kind === (candidate.type === 'income' ? 'income' : 'expense')).map(c => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}</select></div>
           {candidate.issue && <em>{candidate.issue}</em>}
         </div>
       </article>)}</div>
