@@ -1,8 +1,8 @@
 import { lazy, Suspense, useEffect, useRef, useState, type FormEvent } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db, ensureSeedData, noteDataChange } from './db'
-import type { AccountType, Category, GenericColumnMap, ImportCandidate, LedgerTransaction, TransactionType } from './types'
-import { dateTimeLocalValue, downloadBlob, localDateKey, monthKey, transactionImpact, typeLabel, yuan } from './lib/format'
+import type { Account, AccountType, Category, GenericColumnMap, ImportCandidate, LedgerTransaction, TransactionType } from './types'
+import { dateTimeLocalValue, downloadBlob, localDateKey, transactionImpact, typeLabel, yuan } from './lib/format'
 import { makeFingerprint } from './lib/fingerprint'
 import { candidatesFromOcr, guessCategory, hashBuffer, parseStatement, rowsToCandidates, type ParsedFile } from './lib/importers'
 import { markDuplicates } from './lib/dedupe'
@@ -13,6 +13,7 @@ const MonthBars = lazy(() => import('./components/Charts').then(module => ({ def
 const SpendingPie = lazy(() => import('./components/Charts').then(module => ({ default: module.SpendingPie })))
 
 type Route = 'home' | 'transactions' | 'add' | 'import' | 'settings'
+export type SummaryRange = 'week' | 'month' | 'year'
 const navItems: Array<{ route: Route; icon: string; label: string }> = [
   { route: 'home', icon: '⌂', label: '首页' }, { route: 'transactions', icon: '≡', label: '流水' },
   { route: 'add', icon: '+', label: '记账' }, { route: 'import', icon: '⇩', label: '导入' }, { route: 'settings', icon: '⚙', label: '设置' }
@@ -60,28 +61,35 @@ function PageHeader({ eyebrow, title, action }: { eyebrow?: string; title: strin
 function HomePage() {
   const transactions = useLiveQuery(() => db.transactions.orderBy('occurredAt').reverse().toArray(), []) ?? []
   const categories = useLiveQuery(() => db.categories.toArray(), []) ?? []
-  const today = localDateKey(new Date()), month = monthKey(new Date())
+  const [range, setRange] = useState<SummaryRange>('month')
+  const today = localDateKey(new Date())
   const todayItems = transactions.filter(t => localDateKey(t.occurredAt) === today)
-  const monthItems = transactions.filter(t => monthKey(t.occurredAt) === month)
+  const start = new Date(); start.setHours(0, 0, 0, 0)
+  if (range === 'week') start.setDate(start.getDate() - (start.getDay() + 6) % 7)
+  if (range === 'month') start.setDate(1)
+  if (range === 'year') { start.setMonth(0, 1) }
+  const rangeItems = transactions.filter(t => new Date(t.occurredAt).getTime() >= start.getTime() && new Date(t.occurredAt).getTime() <= Date.now())
+  const rangeLabel = { week: '本周', month: '本月', year: '本年' }[range]
   const sum = (items: LedgerTransaction[], types: TransactionType[]) => items.filter(t => types.includes(t.type)).reduce((n, t) => n + t.amountCents, 0)
-  const expense = sum(monthItems, ['expense']) - sum(monthItems, ['refund'])
-  const income = sum(monthItems, ['income'])
+  const expense = sum(rangeItems, ['expense']) - sum(rangeItems, ['refund'])
+  const income = sum(rangeItems, ['income'])
   const changed = useLiveQuery(() => db.settings.get('changesSinceBackup'), [])
   const lastBackup = useLiveQuery(() => db.settings.get('lastBackupAt'), [])
   const needsBackup = Number(changed?.value ?? 0) >= 50 || !lastBackup?.value || Date.now() - new Date(lastBackup.value).getTime() > 7 * 86_400_000
   return <div className="page home-page">
     <PageHeader eyebrow={new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }).format(new Date())} title="今天，记清每一笔" action={<button className="avatar" onClick={() => go('settings')}>账</button>} />
     {needsBackup && transactions.length > 0 && <button className="notice" onClick={() => go('settings')}>你的账本该备份了 <b>去备份 →</b></button>}
+    <div className="period-tabs" aria-label="统计周期">{(['week', 'month', 'year'] as SummaryRange[]).map(value => <button key={value} className={range === value ? 'selected' : ''} onClick={() => setRange(value)}>{{ week: '周', month: '月', year: '年' }[value]}</button>)}</div>
     <section className="balance-card">
-      <span>本月结余</span><strong>{yuan(income - expense)}</strong>
+      <span>{rangeLabel}结余</span><strong>{yuan(income - expense)}</strong>
       <div><p><i className="dot income" />收入 <b>{yuan(income)}</b></p><p><i className="dot expense" />支出 <b>{yuan(expense)}</b></p></div>
     </section>
     <div className="quick-grid">
       <button onClick={() => go('add')}><span>＋</span><b>快速记账</b><small>手工记录一笔</small></button>
       <button onClick={() => go('import')}><span>⌁</span><b>识别账单</b><small>截图或文件导入</small></button>
     </div>
-    <section className="section-card"><div className="section-title"><h2>近 7 日趋势</h2><span>收入与支出</span></div><Suspense fallback={<div className="empty-chart">正在准备图表…</div>}><MonthBars transactions={transactions} /></Suspense></section>
-    <section className="section-card"><div className="section-title"><h2>本月花到哪里</h2><span>{monthItems.length} 笔</span></div><Suspense fallback={<div className="empty-chart">正在准备图表…</div>}><SpendingPie transactions={monthItems} categories={categories} /></Suspense></section>
+    <section className="section-card"><div className="section-title"><h2>{rangeLabel}收支趋势</h2><span>收入与支出</span></div><Suspense fallback={<div className="empty-chart">正在准备图表…</div>}><MonthBars transactions={rangeItems} range={range} /></Suspense></section>
+    <section className="section-card"><div className="section-title"><h2>{rangeLabel}花到哪里</h2><span>{rangeItems.length} 笔</span></div><Suspense fallback={<div className="empty-chart">正在准备图表…</div>}><SpendingPie transactions={rangeItems} categories={categories} rangeLabel={rangeLabel} /></Suspense></section>
     <section className="section-card"><div className="section-title"><h2>今日流水</h2><button onClick={() => go('transactions')}>查看全部</button></div>
       <TransactionList transactions={todayItems.slice(0, 5)} categories={categories} compact />
     </section>
@@ -327,31 +335,69 @@ function SettingsPage() {
   }
   async function addAccount() {
     if (!newAccount.trim()) return
-    const now = new Date().toISOString(); await db.accounts.add({ id: crypto.randomUUID(), name: newAccount.trim(), type: accountType, openingBalanceCents: 0, openingDate: now, inactive: false, createdAt: now }); setNewAccount('')
+    const now = new Date().toISOString(); await db.accounts.add({ id: crypto.randomUUID(), name: newAccount.trim(), type: accountType, openingBalanceCents: 0, openingDate: now, inactive: false, createdAt: now }); await noteDataChange(); setNewAccount(''); setMessage('账户已添加。')
+  }
+  async function renameAccount(account: Account) {
+    const name = prompt('请输入新的账户名称', account.name)
+    if (name === null || !name.trim() || name.trim() === account.name) return
+    await db.accounts.update(account.id, { name: name.trim() }); await noteDataChange(); setMessage(`账户已改名为“${name.trim()}”。`)
+  }
+  async function toggleAccount(account: Account) {
+    await db.accounts.update(account.id, { inactive: !account.inactive }); await noteDataChange(); setMessage(account.inactive ? '账户已重新启用。' : '账户已停用，历史流水仍会保留。')
+  }
+  async function deleteAccount(account: Account) {
+    const [sourceCount, targetCount] = await Promise.all([
+      db.transactions.where('accountId').equals(account.id).count(),
+      db.transactions.where('targetAccountId').equals(account.id).count()
+    ])
+    if (sourceCount + targetCount > 0) return setMessage(`“${account.name}”已有 ${sourceCount + targetCount} 笔相关流水，不能删除；请使用“停用”以保留历史数据。`)
+    if (!confirm(`确定删除没有流水的账户“${account.name}”吗？`)) return
+    await db.accounts.delete(account.id); await noteDataChange(); setMessage('账户已删除。')
   }
   async function addCategory() {
     if (!newCategory.trim()) return
-    await db.categories.add({ id: crypto.randomUUID(), name: newCategory.trim(), emoji: '🏷️', color: '#64748b', kind: 'expense', archived: false }); setNewCategory('')
+    await db.categories.add({ id: crypto.randomUUID(), name: newCategory.trim(), emoji: '🏷️', color: '#64748b', kind: 'expense', archived: false }); await noteDataChange(); setNewCategory(''); setMessage('支出分类已添加。')
+  }
+  async function editCategory(category: Category) {
+    const name = prompt('请输入分类名称', category.name)
+    if (name === null || !name.trim()) return
+    const emoji = prompt('请输入一个分类图标（可以直接输入 Emoji）', category.emoji)
+    if (emoji === null) return
+    await db.categories.update(category.id, { name: name.trim(), emoji: emoji.trim() || '🏷️' }); await noteDataChange(); setMessage('支出分类已修改。')
+  }
+  async function toggleCategory(category: Category) {
+    await db.categories.update(category.id, { archived: !category.archived }); await noteDataChange(); setMessage(category.archived ? '分类已重新显示。' : '分类已隐藏，历史流水仍会保留。')
+  }
+  async function deleteCategory(category: Category) {
+    const [transactionCount, ruleCount] = await Promise.all([
+      db.transactions.where('categoryId').equals(category.id).count(),
+      db.categoryRules.where('categoryId').equals(category.id).count()
+    ])
+    if (transactionCount + ruleCount > 0) return setMessage(`“${category.name}”已被流水或分类规则使用，不能删除；可以改名或隐藏。`)
+    if (!confirm(`确定删除未使用的分类“${category.name}”吗？`)) return
+    await db.categories.delete(category.id); await noteDataChange(); setMessage('支出分类已删除。')
   }
   return <div className="page settings-page">
     <PageHeader eyebrow="数据只属于你" title="设置与备份" />
+    {message && <p className="status-message">{message}</p>}
     <section className="section-card"><div className="section-title"><h2>完整加密备份</h2><span>{lastBackup?.value ? `上次 ${new Date(lastBackup.value).toLocaleDateString('zh-CN')}` : '尚未备份'}</span></div>
       <p className="muted">密码不会保存；忘记密码将无法恢复。建议把 .ledger 文件保存到“文件”中的 iCloud Drive。</p>
       <label className="standalone-label">备份密码（至少 8 个字符）<input type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="new-password" /></label>
       <div className="button-pair"><button className="primary" onClick={() => void exportEncrypted()}>导出加密备份</button><button className="secondary" onClick={() => restoreRef.current?.click()}>恢复备份</button></div>
       <input hidden ref={restoreRef} type="file" accept=".ledger,application/json" onChange={e => void restore(e.target.files?.[0])} />
       <button className="link-button" onClick={exportCsv}>另存一份可阅读 CSV</button>
-      {message && <p className="status-message">{message}</p>}
     </section>
     <section className="section-card"><div className="section-title"><h2>账户</h2><span>{accounts.filter(a => !a.inactive).length} 个</span></div>
-      <div className="chip-list">{accounts.map(a => <button key={a.id} className={a.inactive ? 'muted-chip' : ''} onClick={() => void db.accounts.update(a.id, { inactive: !a.inactive })}>{a.name}<small>{a.inactive ? '已停用' : '使用中'}</small></button>)}</div>
+      <p className="muted">有流水的账户不能直接删除，可以停用；这样不会破坏历史统计。</p>
+      <div className="manage-list">{accounts.map(a => <div key={a.id} className={`manage-item ${a.inactive ? 'is-muted' : ''}`}><div><b>{a.name}</b><small>{a.inactive ? '已停用' : '使用中'}</small></div><div className="manage-actions"><button onClick={() => void renameAccount(a)}>改名</button><button onClick={() => void toggleAccount(a)}>{a.inactive ? '启用' : '停用'}</button><button className="danger-mini" onClick={() => void deleteAccount(a)}>删除</button></div></div>)}</div>
       <div className="inline-form"><input value={newAccount} onChange={e => setNewAccount(e.target.value)} placeholder="新账户名称" /><select value={accountType} onChange={e => setAccountType(e.target.value as AccountType)}><option value="bank">银行卡</option><option value="cash">现金</option><option value="other">其他</option></select><button onClick={() => void addAccount()}>添加</button></div>
     </section>
     <section className="section-card"><div className="section-title"><h2>支出分类</h2><span>{categories.filter(c => c.kind === 'expense' && !c.archived).length} 个</span></div>
-      <div className="chip-list">{categories.filter(c => c.kind === 'expense').map(c => <button key={c.id} className={c.archived ? 'muted-chip' : ''} onClick={() => void db.categories.update(c.id, { archived: !c.archived })}>{c.emoji} {c.name}<small>{c.archived ? '已隐藏' : '显示'}</small></button>)}</div>
+      <p className="muted">名称和图标都可以修改；有历史流水的分类可隐藏，但不会被误删。</p>
+      <div className="manage-list">{categories.filter(c => c.kind === 'expense').map(c => <div key={c.id} className={`manage-item ${c.archived ? 'is-muted' : ''}`}><div><b>{c.emoji} {c.name}</b><small>{c.archived ? '已隐藏' : '显示中'}</small></div><div className="manage-actions"><button onClick={() => void editCategory(c)}>修改</button><button onClick={() => void toggleCategory(c)}>{c.archived ? '显示' : '隐藏'}</button><button className="danger-mini" onClick={() => void deleteCategory(c)}>删除</button></div></div>)}</div>
       <div className="inline-form"><input value={newCategory} onChange={e => setNewCategory(e.target.value)} placeholder="新分类名称" /><button onClick={() => void addCategory()}>添加</button></div>
     </section>
-    <section className="section-card about-card"><h2>快捷指令入口</h2><p>操作按钮可打开带金额和账户的链接：<code>/#/add?amount=28.5&amp;account=wechat</code>。账户可填写 <code>alipay</code>、<code>wechat</code> 或 <code>bank</code>。</p><p>银行短信自动化可把短信正文作为 <code>sms</code> 参数传入；应用会在本机提取金额、商户和时间，并在保存前让你核对。</p></section>
+    <section className="section-card about-card"><h2>快捷指令入口</h2><p>操作按钮可打开带金额和账户的链接：<code>/#/add?amount=28.5&amp;account=wechat</code>。账户可填写 <code>alipay</code>、<code>wechat</code> 或 <code>bank</code>。</p><p>多家银行可以共用一条短信自动化：条件设为短信正文包含“银行】”，再把短信正文作为 <code>sms</code> 参数传入。应用会在本机提取金额、商户和时间，并在保存前让你核对。</p></section>
     <section className="section-card about-card"><h2>关于每日账本</h2><p>离线优先的个人收支 PWA。它不能直接读取支付宝、微信或其他 App 通知；快捷指令仅把你主动输入的内容或符合条件的银行短信交给应用。</p></section>
   </div>
 }
