@@ -8,6 +8,7 @@ import { candidatesFromOcr, guessCategory, hashBuffer, parseStatement, rowsToCan
 import { markDuplicates } from './lib/dedupe'
 import { decryptBackup, encryptBackup, readAllData, restoreAllData, transactionsCsv, type EncryptedBackup } from './lib/backup'
 import { readQuickEntryPrefill, type QuickEntryPrefill } from './lib/quickEntry'
+import { prepareImageForOcr } from './lib/ocr'
 
 const MonthBars = lazy(() => import('./components/Charts').then(module => ({ default: module.MonthBars })))
 const SpendingPie = lazy(() => import('./components/Charts').then(module => ({ default: module.SpendingPie })))
@@ -222,10 +223,13 @@ function ImportPage() {
       try {
         const { createWorker } = await import('tesseract.js')
         const worker = await createWorker('chi_sim+eng', undefined, { logger: status => { if (status.status === 'recognizing text') setBusy(`正在识别文字 ${Math.round(status.progress * 100)}%`) } })
-        const result = await worker.recognize(file)
+        setBusy('正在增强深色截图…')
+        const preparedImage = await prepareImageForOcr(file)
+        setBusy('正在本机识别文字…')
+        const result = await worker.recognize(preparedImage)
         await worker.terminate()
         const sourceAccount = accounts.find(a => a.id === accountId)?.id ?? accounts[0]?.id ?? ''
-        const marked = await markDuplicates(candidatesFromOcr(result.data.text, sourceAccount).map(c => ({ ...c, categoryId: guessCategory(c.merchant, c.note, c.type) })))
+        const marked = await markDuplicates(candidatesFromOcr(result.data.text, sourceAccount, accounts).map(c => ({ ...c, categoryId: guessCategory(c.merchant, c.note, c.type) })))
         setFileMeta({ name: file.name, hash, source: 'ocr' }); setCandidates(marked); setSelected(new Set(marked.filter(c => c.state === 'ready').map(c => c.id)))
       } catch (error) { setMessage(error instanceof Error ? error.message : '图片识别失败') } finally { setBusy('') }
       return
@@ -252,7 +256,30 @@ function ImportPage() {
   }
 
   function updateCandidate(id: string, patch: Partial<ImportCandidate>) {
-    setCandidates(items => items.map(item => item.id === id ? { ...item, ...patch } : item))
+    setCandidates(items => items.map(item => item.id === id ? { ...item, ...patch, manuallyEdited: true } : item))
+  }
+
+  async function repairCandidate(id: string, patch: Partial<ImportCandidate>) {
+    const current = candidates.find(candidate => candidate.id === id)
+    if (!current) return
+    const updated = { ...current, ...patch, manuallyEdited: true }
+    updated.fingerprint = makeFingerprint({ occurredAt: updated.occurredAt, amountCents: updated.amountCents, type: updated.type, merchant: updated.merchant, accountId: updated.accountId ?? accountId })
+    if (updated.amountCents > 0 && updated.occurredAt) {
+      updated.issue = undefined
+      updated.state = 'ready'
+      updated.confidence = Math.max(updated.confidence, 0.6)
+      const [checked] = await markDuplicates([updated])
+      if (checked) Object.assign(updated, checked)
+    } else {
+      updated.state = 'invalid'
+      updated.issue = updated.amountCents > 0 ? '日期无法识别' : '未识别到金额，请手工输入'
+    }
+    setCandidates(items => items.map(item => item.id === id ? updated : item))
+    setSelected(value => {
+      const next = new Set(value)
+      updated.state === 'ready' ? next.add(id) : next.delete(id)
+      return next
+    })
   }
 
   async function confirmImport() {
@@ -265,7 +292,7 @@ function ImportPage() {
       merchant: item.merchant, note: item.note, categoryId: item.type === 'transfer' ? undefined : item.categoryId,
       accountId: item.accountId ?? accountId, source: item.source, externalId: item.externalId,
       fingerprint: makeFingerprint({ occurredAt: item.occurredAt, amountCents: item.amountCents, type: item.type, merchant: item.merchant, accountId: item.accountId ?? accountId }),
-      importBatchId: batchId, status: 'confirmed', manuallyEdited: false, createdAt: now, updatedAt: now
+      importBatchId: batchId, status: 'confirmed', manuallyEdited: Boolean(item.manuallyEdited), createdAt: now, updatedAt: now
     }))
     await db.transaction('rw', db.importBatches, db.importCandidates, db.transactions, async () => {
       await db.importBatches.add({ id: batchId, source: fileMeta.source, fileName: fileMeta.name, fileHash: fileMeta.hash, importedAt: now, totalCount: candidates.length, importedCount: chosen.length, duplicateCount: candidates.filter(c => c.state.includes('duplicate')).length, errorCount: candidates.filter(c => c.state === 'invalid').length })
@@ -294,8 +321,9 @@ function ImportPage() {
       <div className="review-head"><div><h2>确认导入</h2><p>{candidates.length} 条候选 · 已选 {selected.size} 条</p></div><select value={accountId} onChange={e => { setAccountId(e.target.value); setCandidates(items => items.map(c => ({ ...c, accountId: e.target.value }))) }}>{accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></div>
       <div className="candidate-list">{candidates.map(candidate => <article className={`candidate ${candidate.state}`} key={candidate.id}>
         <input type="checkbox" checked={selected.has(candidate.id)} disabled={candidate.state === 'invalid' || candidate.state === 'exact-duplicate'} onChange={e => setSelected(value => { const next = new Set(value); e.target.checked ? next.add(candidate.id) : next.delete(candidate.id); return next })} />
-        <div className="candidate-main"><div><input value={candidate.merchant} onChange={e => updateCandidate(candidate.id, { merchant: e.target.value })} /><strong>{yuan(candidate.amountCents)}</strong></div><small>{candidate.occurredAt ? new Date(candidate.occurredAt).toLocaleString('zh-CN') : '无日期'} · {typeLabel[candidate.type]} · 置信度 {Math.round(candidate.confidence * 100)}%</small>
+        <div className="candidate-main"><div><input aria-label="商户" value={candidate.merchant} onChange={e => updateCandidate(candidate.id, { merchant: e.target.value })} /><label className="candidate-amount"><span>¥</span><input aria-label="金额" inputMode="decimal" defaultValue={candidate.amountCents ? (candidate.amountCents / 100).toFixed(2) : ''} placeholder="输入金额" onBlur={e => void repairCandidate(candidate.id, { amountCents: Math.round(Math.abs(Number(e.target.value)) * 100) || 0 })} /></label></div><small>{candidate.occurredAt ? new Date(candidate.occurredAt).toLocaleString('zh-CN') : '无日期'} · {typeLabel[candidate.type]} · 置信度 {Math.round(candidate.confidence * 100)}%</small>
           <div className="candidate-fields"><select aria-label="交易类型" value={candidate.type} onChange={e => updateCandidate(candidate.id, { type: e.target.value as TransactionType })}>{(['expense', 'income', 'refund', 'transfer'] as TransactionType[]).map(t => <option key={t} value={t}>{typeLabel[t]}</option>)}</select><select aria-label="实际扣款账户" value={candidate.accountId ?? accountId} onChange={e => updateCandidate(candidate.id, { accountId: e.target.value })}>{accounts.map(account => <option key={account.id} value={account.id}>{account.name}</option>)}</select><select aria-label="分类" value={candidate.categoryId ?? ''} onChange={e => updateCandidate(candidate.id, { categoryId: e.target.value })}>{categories.filter(c => c.kind === (candidate.type === 'income' ? 'income' : 'expense')).map(c => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}</select></div>
+          <label className="candidate-date"><span>交易时间</span><input aria-label="交易时间" type="datetime-local" value={dateTimeLocalValue(candidate.occurredAt)} onChange={e => void repairCandidate(candidate.id, { occurredAt: e.target.value ? new Date(e.target.value).toISOString() : '' })} /></label>
           {candidate.issue && <em>{candidate.issue}</em>}
         </div>
       </article>)}</div>

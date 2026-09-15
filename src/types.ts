@@ -71,6 +71,7 @@ export interface ImportCandidate {
   fingerprint: string
   state: 'ready' | 'possible-duplicate' | 'exact-duplicate' | 'invalid' | 'imported' | 'skipped'
   issue?: string
+  manuallyEdited?: boolean
 }
 
 export interface CategoryRule {
