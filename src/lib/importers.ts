@@ -156,6 +156,8 @@ function ocrAmount(text: string) {
 }
 
 function matchPaymentAccount(paymentMethod: string, fallbackId: string, accounts: Account[]) {
+  if (/零钱|微信|财付通/.test(paymentMethod)) return accounts.find(account => account.type === 'wechat')?.id ?? fallbackId
+  if (/支付宝|花呗/.test(paymentMethod)) return accounts.find(account => account.type === 'alipay')?.id ?? fallbackId
   const compact = (value: string) => value.replace(/中国|股份有限公司|有限责任公司|储蓄卡|信用卡|银行卡|银行|[\s·-]/g, '')
   const method = compact(paymentMethod)
   if (!method) return fallbackId

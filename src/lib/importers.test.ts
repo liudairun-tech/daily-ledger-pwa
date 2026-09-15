@@ -45,7 +45,11 @@ describe('分类和 OCR', () => {
 收单机构 财付通支付科技有限公司
 支付方式 零钱
 交易单号 4500000470202609155389521296`
-    const [candidate] = candidatesFromOcr(text, 'account-wechat')
+    const accounts = [
+      { id: 'account-alipay', name: '支付宝', type: 'alipay' as const, openingBalanceCents: 0, openingDate: '', inactive: false, createdAt: '' },
+      { id: 'account-wechat', name: '微信', type: 'wechat' as const, openingBalanceCents: 0, openingDate: '', inactive: false, createdAt: '' }
+    ]
+    const [candidate] = candidatesFromOcr(text, 'account-alipay', accounts)
     expect(candidate).toMatchObject({
       amountCents: 1800,
       merchant: '幸福和顺物业服务有限公司',
