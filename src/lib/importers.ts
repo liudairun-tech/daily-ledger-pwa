@@ -158,6 +158,7 @@ function ocrAmount(text: string) {
 function matchPaymentAccount(paymentMethod: string, fallbackId: string, accounts: Account[]) {
   const compact = (value: string) => value.replace(/中国|股份有限公司|有限责任公司|储蓄卡|信用卡|银行卡|银行|[\s·-]/g, '')
   const method = compact(paymentMethod)
+  if (!method) return fallbackId
   return accounts.find(account => {
     const name = compact(account.name)
     return name.length >= 2 && (method.includes(name) || name.includes(method))

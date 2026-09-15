@@ -64,5 +64,7 @@ describe('分类和 OCR', () => {
     ]
     const [candidate] = candidatesFromOcr('支付成功\n-28.00\n支付方式 建设银行储蓄卡\n支付时间 2026年9月15日 21:28:06', 'account-wechat', accounts)
     expect(candidate?.accountId).toBe('account-ccb')
+    const [withoutMethod] = candidatesFromOcr('支付成功\n-28.00\n支付时间 2026年9月15日 21:28:06', 'account-wechat', accounts)
+    expect(withoutMethod?.accountId).toBe('account-wechat')
   })
 })
