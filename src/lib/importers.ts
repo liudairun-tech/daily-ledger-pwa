@@ -2,7 +2,7 @@ import JSZip from 'jszip'
 import Papa from 'papaparse'
 import { makeFingerprint, normalizeText } from './fingerprint'
 import { parseAmountToCents } from './format'
-import type { GenericColumnMap, ImportCandidate, TransactionSource, TransactionType } from '../types'
+import type { Account, GenericColumnMap, ImportCandidate, TransactionSource, TransactionType } from '../types'
 
 export interface ParsedFile {
   source: Exclude<TransactionSource, 'manual' | 'ocr'> | 'unknown'
@@ -134,18 +134,54 @@ export function guessCategory(merchant: string, note: string, type: TransactionT
   return categoryKeywords.find(([pattern]) => new RegExp(pattern).test(haystack))?.[1] ?? 'cat-other'
 }
 
-export function candidatesFromOcr(text: string, accountId: string): ImportCandidate[] {
-  const amountMatches = [...text.matchAll(/[¥￥]\s*([0-9,]+(?:\.\d{1,2})?)|(?:金额|合计|实付|付款)\s*[:：]?\s*([0-9,]+(?:\.\d{1,2})?)/g)]
-  const amounts = amountMatches.map(match => parseAmountToCents(match[1] ?? match[2] ?? '')).filter(Boolean)
-  const amountCents = amounts.sort((a, b) => b - a)[0] ?? 0
+function ocrField(text: string, labels: string[]) {
+  for (const label of labels) {
+    const match = text.match(new RegExp(`${label}\\s*[:：]?\\s*([^\\n\\r]{2,80})`))
+    if (match?.[1]) return match[1].trim()
+  }
+  return ''
+}
+
+function ocrAmount(text: string) {
+  const normalized = text.replace(/[−–—﹣]/g, '-').replace(/[，]/g, ',')
+  const patterns: Array<[RegExp, number]> = [
+    [/[¥￥]\s*([+-]?\s*[0-9,]+(?:\.\d{1,2})?)/g, 100],
+    [/(?:金额|合计|实付|付款)\s*[:：]?\s*([+-]?\s*[0-9,]+(?:\.\d{1,2})?)/g, 95],
+    [/(?:^|\n)\s*(-\s*[0-9,]+\.\d{2})\s*(?:元)?\s*(?=\n|$)/g, 90],
+    [/(?:^|\n)\s*([0-9,]+\.\d{2})\s*(?:元)?\s*(?=\n|$)/g, 55]
+  ]
+  const candidates = patterns.flatMap(([pattern, score]) => [...normalized.matchAll(pattern)].map(match => ({ value: match[1] ?? '', score })))
+  candidates.sort((left, right) => right.score - left.score)
+  return parseAmountToCents(candidates[0]?.value ?? '')
+}
+
+function matchPaymentAccount(paymentMethod: string, fallbackId: string, accounts: Account[]) {
+  const compact = (value: string) => value.replace(/中国|股份有限公司|有限责任公司|储蓄卡|信用卡|银行卡|银行|[\s·-]/g, '')
+  const method = compact(paymentMethod)
+  return accounts.find(account => {
+    const name = compact(account.name)
+    return name.length >= 2 && (method.includes(name) || name.includes(method))
+  })?.id ?? fallbackId
+}
+
+export function candidatesFromOcr(text: string, accountId: string, accounts: Account[] = []): ImportCandidate[] {
+  const normalizedText = text.replace(/\r/g, '')
+  const amountCents = ocrAmount(normalizedText)
   const dateMatch = text.match(/20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}(?:日)?(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?/)
   const occurredAt = parseDate(dateMatch?.[0] ?? '') || new Date().toISOString()
   const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
-  const merchant = lines.find(line => line.length >= 2 && line.length <= 28 && !/[¥￥]|金额|付款成功|交易时间/.test(line)) ?? '截图识别'
+  const merchant = ocrField(normalizedText, ['商户全称', '商户名称', '交易对方', '收款方'])
+    || lines.find(line => line.length >= 2 && line.length <= 28 && !/[¥￥]|金额|付款成功|支付成功|交易时间|支付时间|账单|全部账单|当前状态|商品|商户/.test(line))
+    || '截图识别'
+  const product = ocrField(normalizedText, ['商品名称', '商品'])
+  const paymentMethod = ocrField(normalizedText, ['支付方式', '付款方式'])
+  const externalId = ocrField(normalizedText, ['交易单号', '交易号']).match(/[A-Za-z0-9]{10,}/)?.[0]
   const type: TransactionType = /退款/.test(text) ? 'refund' : /收款|收入/.test(text) ? 'income' : 'expense'
-  const fingerprint = makeFingerprint({ occurredAt, amountCents, type, merchant, accountId })
+  const resolvedAccountId = matchPaymentAccount(paymentMethod, accountId, accounts)
+  const fingerprint = makeFingerprint({ occurredAt, amountCents, type, merchant, accountId: resolvedAccountId })
   return [{
-    id: crypto.randomUUID(), source: 'ocr', type, amountCents, occurredAt, merchant, note: '由截图 OCR 识别', accountId,
+    id: crypto.randomUUID(), source: 'ocr', externalId, type, amountCents, occurredAt, merchant,
+    note: [product, paymentMethod && `支付方式：${paymentMethod}`, '由截图 OCR 识别'].filter(Boolean).join('；'), accountId: resolvedAccountId,
     raw: { ocrText: text }, confidence: amountCents ? (dateMatch ? 0.82 : 0.68) : 0.25, fingerprint,
     state: amountCents ? 'ready' : 'invalid', issue: amountCents ? undefined : '未识别到金额'
   }]

@@ -33,4 +33,36 @@ describe('分类和 OCR', () => {
     const [candidate] = candidatesFromOcr('付款成功\n星空咖啡\n￥36.80\n2026-09-12 08:30', 'account-alipay')
     expect(candidate).toMatchObject({ amountCents: 3680, merchant: '星空咖啡', state: 'ready' })
   })
+
+  it('识别微信深色账单中的独立负金额和结构化字段', () => {
+    const text = `账单
+幸福和顺
+-18.00
+当前状态 支付成功
+支付时间 2026年9月15日 21:28:06
+商品 和信融锦云湾-川AG16907-停车费
+商户全称 幸福和顺物业服务有限公司
+收单机构 财付通支付科技有限公司
+支付方式 零钱
+交易单号 4500000470202609155389521296`
+    const [candidate] = candidatesFromOcr(text, 'account-wechat')
+    expect(candidate).toMatchObject({
+      amountCents: 1800,
+      merchant: '幸福和顺物业服务有限公司',
+      externalId: '4500000470202609155389521296',
+      accountId: 'account-wechat',
+      state: 'ready'
+    })
+    expect(candidate?.note).toContain('停车费')
+    expect(candidate?.note).toContain('支付方式：零钱')
+  })
+
+  it('根据微信账单支付方式归入实际银行卡账户', () => {
+    const accounts = [
+      { id: 'account-wechat', name: '微信', type: 'wechat' as const, openingBalanceCents: 0, openingDate: '', inactive: false, createdAt: '' },
+      { id: 'account-ccb', name: '建设银行', type: 'bank' as const, openingBalanceCents: 0, openingDate: '', inactive: false, createdAt: '' }
+    ]
+    const [candidate] = candidatesFromOcr('支付成功\n-28.00\n支付方式 建设银行储蓄卡\n支付时间 2026年9月15日 21:28:06', 'account-wechat', accounts)
+    expect(candidate?.accountId).toBe('account-ccb')
+  })
 })
