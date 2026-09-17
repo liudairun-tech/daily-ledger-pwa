@@ -48,10 +48,10 @@ const defaultCategories: Omit<Category, 'archived'>[] = [
 export async function ensureSeedData() {
   const now = new Date().toISOString()
   if (await db.accounts.count() === 0) {
-    await db.accounts.bulkAdd(defaultAccounts.map(a => ({ ...a, createdAt: now, openingDate: now })))
+    await db.accounts.bulkPut(defaultAccounts.map(a => ({ ...a, createdAt: now, openingDate: now })))
   }
   if (await db.categories.count() === 0) {
-    await db.categories.bulkAdd(defaultCategories.map(c => ({ ...c, archived: false })))
+    await db.categories.bulkPut(defaultCategories.map(c => ({ ...c, archived: false })))
   }
 }
 

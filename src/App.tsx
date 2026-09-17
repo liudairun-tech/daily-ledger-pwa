@@ -4,7 +4,7 @@ import { db, ensureSeedData, noteDataChange } from './db'
 import type { Account, AccountType, Category, GenericColumnMap, ImportCandidate, LedgerTransaction, TransactionType } from './types'
 import { dateTimeLocalValue, downloadBlob, localDateKey, transactionImpact, typeLabel, yuan } from './lib/format'
 import { makeFingerprint } from './lib/fingerprint'
-import { candidatesFromOcr, guessCategory, hashBuffer, parseStatement, rowsToCandidates, type ParsedFile } from './lib/importers'
+import { candidatesFromOcr, candidatesFromSmsQueue, extractTextFromFile, guessCategory, hashBuffer, parseStatement, rowsToCandidates, type ParsedFile } from './lib/importers'
 import { markDuplicates } from './lib/dedupe'
 import { decryptBackup, encryptBackup, readAllData, restoreAllData, transactionsCsv, type EncryptedBackup } from './lib/backup'
 import { readQuickEntryPrefill, type QuickEntryPrefill } from './lib/quickEntry'
@@ -207,7 +207,7 @@ function ImportPage() {
   const [busy, setBusy] = useState('')
   const [message, setMessage] = useState('')
   const [parsed, setParsed] = useState<ParsedFile>()
-  const [fileMeta, setFileMeta] = useState<{ name: string; hash: string; source: 'alipay' | 'wechat' | 'bank' | 'ocr' }>()
+  const [fileMeta, setFileMeta] = useState<{ name: string; hash: string; source: 'alipay' | 'wechat' | 'bank' | 'ocr'; smsQueue?: boolean }>()
   const [accountId, setAccountId] = useState('account-alipay')
   const [map, setMap] = useState<GenericColumnMap>({ date: '', amount: '' })
   const [candidates, setCandidates] = useState<ImportCandidate[]>([])
@@ -233,6 +233,23 @@ function ImportPage() {
         setFileMeta({ name: file.name, hash, source: 'ocr' }); setCandidates(marked); setSelected(new Set(marked.filter(c => c.state === 'ready').map(c => c.id)))
       } catch (error) { setMessage(error instanceof Error ? error.message : '图片识别失败') } finally { setBusy('') }
       return
+    }
+    if (/\.txt$/i.test(file.name)) {
+      const text = await extractTextFromFile(file)
+      const smsCandidates = candidatesFromSmsQueue(text, accounts)
+      if (smsCandidates.length > 0) {
+        setBusy('正在整理锁屏期间收到的银行短信…')
+        try {
+          const marked = await markDuplicates(smsCandidates)
+          const firstAccount = marked.find(candidate => candidate.accountId)?.accountId
+          if (firstAccount) setAccountId(firstAccount)
+          setFileMeta({ name: file.name, hash, source: 'bank', smsQueue: true })
+          setCandidates(marked)
+          setSelected(new Set(marked.filter(candidate => candidate.state === 'ready').map(candidate => candidate.id)))
+          setMessage(`识别到 ${marked.length} 条银行短信；请核对黄色疑似重复项。`)
+        } finally { setBusy('') }
+        return
+      }
     }
     setBusy('正在读取账单…')
     try {
@@ -306,9 +323,9 @@ function ImportPage() {
   return <div className="page">
     <PageHeader eyebrow="本机处理，不上传账单" title="智能导入" />
     <section className="import-hero">
-      <div className="scan-orbit">⌁</div><h2>账单或支付截图</h2><p>支持支付宝、微信 CSV/TXT/ZIP，银行卡通用 CSV，以及照片和截图 OCR。</p>
-      <button className="primary" onClick={() => inputRef.current?.click()}>选择文件或照片</button>
-      <input ref={inputRef} hidden type="file" accept=".csv,.txt,.zip,text/csv,image/*" onChange={e => void chooseFile(e.target.files?.[0])} />
+      <div className="scan-orbit">⌁</div><h2>账单、截图或锁屏短信</h2><p>支持锁屏短信队列、支付宝/微信账单、银行卡 CSV，以及照片和截图 OCR。</p>
+      <button className="primary" onClick={() => inputRef.current?.click()}>选择待处理文件或照片</button>
+      <input ref={inputRef} hidden type="file" accept=".csv,.txt,.zip,text/csv,text/plain,image/*" onChange={e => void chooseFile(e.target.files?.[0])} />
     </section>
     <div className="privacy-note"><b>隐私说明</b><span>图片和账单只在此设备处理。OCR 首次使用会下载语言模型，但不会上传图片。</span></div>
     {busy && <div className="progress-card"><span className="spinner" />{busy}</div>}
@@ -318,7 +335,7 @@ function ImportPage() {
       <button className="primary" disabled={!map.date || !map.amount} onClick={() => void prepareCandidates(parsed, accountId, map)}>生成预览</button>
     </section>}
     {candidates.length > 0 && <section className="review-section">
-      <div className="review-head"><div><h2>确认导入</h2><p>{candidates.length} 条候选 · 已选 {selected.size} 条</p></div><select value={accountId} onChange={e => { setAccountId(e.target.value); setCandidates(items => items.map(c => ({ ...c, accountId: e.target.value }))) }}>{accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></div>
+      <div className="review-head"><div><h2>确认导入</h2><p>{candidates.length} 条候选 · 已选 {selected.size} 条</p></div>{fileMeta?.smsQueue ? <span className="auto-match">已自动匹配账户</span> : <select value={accountId} onChange={e => { setAccountId(e.target.value); setCandidates(items => items.map(c => ({ ...c, accountId: e.target.value }))) }}>{accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select>}</div>
       <div className="candidate-list">{candidates.map(candidate => <article className={`candidate ${candidate.state}`} key={candidate.id}>
         <input type="checkbox" checked={selected.has(candidate.id)} disabled={candidate.state === 'invalid' || candidate.state === 'exact-duplicate'} onChange={e => setSelected(value => { const next = new Set(value); e.target.checked ? next.add(candidate.id) : next.delete(candidate.id); return next })} />
         <div className="candidate-main"><div><input aria-label="商户" value={candidate.merchant} onChange={e => updateCandidate(candidate.id, { merchant: e.target.value })} /><label className="candidate-amount"><span>¥</span><input aria-label="金额" inputMode="decimal" defaultValue={candidate.amountCents ? (candidate.amountCents / 100).toFixed(2) : ''} placeholder="输入金额" onBlur={e => void repairCandidate(candidate.id, { amountCents: Math.round(Math.abs(Number(e.target.value)) * 100) || 0 })} /></label></div><small>{candidate.occurredAt ? new Date(candidate.occurredAt).toLocaleString('zh-CN') : '无日期'} · {typeLabel[candidate.type]} · 置信度 {Math.round(candidate.confidence * 100)}%</small>
@@ -329,7 +346,7 @@ function ImportPage() {
       </article>)}</div>
       <div className="sticky-confirm"><button className="primary" onClick={() => void confirmImport()}>确认导入 {selected.size} 笔</button></div>
     </section>}
-    {!candidates.length && !busy && <section className="section-card tips"><h2>导入原则</h2><ol><li>相同文件不会重复导入</li><li>相同流水号自动拦截</li><li>同额近时交易需要你确认</li><li>还款、充值和转账不计收支</li></ol></section>}
+    {!candidates.length && !busy && <><section className="section-card queue-card"><div className="section-title"><h2>锁屏短信待处理</h2><span>新增</span></div><p>iPhone 锁屏时，快捷指令把银行短信追加到 <b>每日账本待处理.txt</b>。解锁后在上方选择这个文件，即可批量核对；旧短信会按交易指纹自动拦截，不会重复入账。</p></section><section className="section-card tips"><h2>导入原则</h2><ol><li>相同文件和相同交易不会重复导入</li><li>自动匹配银行名称及卡号尾号对应账户</li><li>银行卡与微信/支付宝同额近时交易标黄确认</li><li>还款、充值和转账不计收支</li></ol></section></>}
   </div>
 }
 
@@ -425,7 +442,8 @@ function SettingsPage() {
       <div className="manage-list">{categories.filter(c => c.kind === 'expense').map(c => <div key={c.id} className={`manage-item ${c.archived ? 'is-muted' : ''}`}><div><b>{c.emoji} {c.name}</b><small>{c.archived ? '已隐藏' : '显示中'}</small></div><div className="manage-actions"><button onClick={() => void editCategory(c)}>修改</button><button onClick={() => void toggleCategory(c)}>{c.archived ? '显示' : '隐藏'}</button><button className="danger-mini" onClick={() => void deleteCategory(c)}>删除</button></div></div>)}</div>
       <div className="inline-form"><input value={newCategory} onChange={e => setNewCategory(e.target.value)} placeholder="新分类名称" /><button onClick={() => void addCategory()}>添加</button></div>
     </section>
-    <section className="section-card about-card"><h2>快捷指令入口</h2><p>操作按钮可打开带金额和账户的链接：<code>/#/add?amount=28.5&amp;account=wechat</code>。账户可填写 <code>alipay</code>、<code>wechat</code> 或 <code>bank</code>。</p><p>多家银行可以共用一条短信自动化：条件设为短信正文包含“银行】”，再把短信正文作为 <code>sms</code> 参数传入。应用会在本机提取金额、商户和时间，并在保存前让你核对。</p></section>
+    <section className="section-card about-card"><h2>锁屏短信自动收集</h2><p>把短信自动化设为“立即运行”，动作改为把短信正文追加到 iCloud Drive 的 <code>Shortcuts/每日账本待处理.txt</code>。开启快捷指令的“锁定时允许运行”后，锁屏期间不再尝试打开网页，而是先保存短信。</p><p>解锁后打开“导入”，选择该 TXT 文件即可批量核对。账户名称包含银行名或卡号后四位时会自动匹配；已经入账的旧短信会自动拦截。</p></section>
+    <section className="section-card about-card"><h2>操作按钮快捷记账</h2><p>操作按钮仍可打开：<code>/#/add?amount=28.5&amp;account=wechat</code>。账户可填写 <code>alipay</code>、<code>wechat</code> 或 <code>bank</code>；这个入口适合手机已解锁时使用。</p></section>
     <section className="section-card about-card"><h2>关于每日账本</h2><p>离线优先的个人收支 PWA。它不能直接读取支付宝、微信或其他 App 通知；快捷指令仅把你主动输入的内容或符合条件的银行短信交给应用。</p></section>
   </div>
 }
