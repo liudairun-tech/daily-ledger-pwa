@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { candidatesFromOcr, guessCategory, rowsToCandidates, type ParsedFile } from './importers'
+import { candidatesFromOcr, candidatesFromSmsQueue, guessCategory, rowsToCandidates, type ParsedFile } from './importers'
 import { parseAmountToCents } from './format'
 
 describe('金额和账单标准化', () => {
@@ -70,5 +70,18 @@ describe('分类和 OCR', () => {
     expect(candidate?.accountId).toBe('account-ccb')
     const [withoutMethod] = candidatesFromOcr('支付成功\n-28.00\n支付时间 2026年9月15日 21:28:06', 'account-wechat', accounts)
     expect(withoutMethod?.accountId).toBe('account-wechat')
+  })
+})
+
+describe('锁屏短信队列', () => {
+  it('批量解析并匹配银行名称及卡号尾号', () => {
+    const accounts = [
+      { id: 'spd-9986', name: '浦发银行 9986', type: 'bank' as const, openingBalanceCents: 0, openingDate: '', inactive: false, createdAt: '' },
+      { id: 'ccb-5239', name: '中国建设银行 5239', type: 'bank' as const, openingBalanceCents: 0, openingDate: '', inactive: false, createdAt: '' }
+    ]
+    const candidates = candidatesFromSmsQueue('您尾号9986卡人民币活期19:18取出16.00[网上支付-财付通]，可用余额：1,443.78元。【浦发银行】\n【建设银行】您账户5239于8月24日12:12:43ETC通行费支出8.27元,可用余额2947.79元。', accounts)
+    expect(candidates).toHaveLength(2)
+    expect(candidates[0]).toMatchObject({ amountCents: 1600, accountId: 'spd-9986', state: 'ready' })
+    expect(candidates[1]).toMatchObject({ amountCents: 827, accountId: 'ccb-5239', categoryId: 'cat-transport' })
   })
 })

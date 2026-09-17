@@ -10,6 +10,11 @@ export interface QuickEntryPrefill {
   source?: TransactionSource
 }
 
+export interface QueuedSmsEntry {
+  raw: string
+  receivedAt?: string
+}
+
 const validTypes = new Set<TransactionType>(['expense', 'income', 'refund', 'transfer'])
 const validSources = new Set<TransactionSource>(['manual', 'alipay', 'wechat', 'bank', 'ocr'])
 
@@ -19,11 +24,11 @@ function cleanAmount(value?: string | null) {
   return match?.[0]
 }
 
-function smsDate(text: string) {
+function smsDate(text: string, referenceDate?: string) {
   const full = text.match(/(20\d{2})[年/-](\d{1,2})[月/-](\d{1,2})日?\s*(\d{1,2})[:：](\d{2})/)
   const short = text.match(/(\d{1,2})月(\d{1,2})日?\s*(\d{1,2})[:：](\d{2})/)
-  const timeOnly = text.match(/(?:活期|账户|卡|于)?\s*(\d{1,2})[:：](\d{2})(?::\d{2})?\s*(?:取出|支出|消费|支付|交易)/)
-  const now = new Date()
+  const timeOnly = text.match(/(?:活期|账户|卡|于)?\s*(\d{1,2})[:：](\d{2})(?::\d{2})?\s*(?:取出|支出|消费|支付|交易|收入|存入|转入|入账)/)
+  const now = referenceDate ? new Date(referenceDate.replace(' ', 'T')) : new Date()
   const parts = full
     ? [Number(full[1]), Number(full[2]), Number(full[3]), Number(full[4]), Number(full[5])]
     : short
@@ -37,12 +42,12 @@ function smsDate(text: string) {
 }
 
 /** Extracts common Chinese bank-card debit SMS fields locally. */
-export function parseBankSms(text: string): QuickEntryPrefill {
+export function parseBankSms(text: string, referenceDate?: string): QuickEntryPrefill {
   const normalized = text.replace(/\s+/g, ' ').trim()
   const amountPatterns = [
     /快捷支付\s*([\d,]+(?:\.\d{1,2})?)/,
-    /(?:取出|支出)\s*([\d,]+(?:\.\d{1,2})?)/,
-    /(?:消费|支付|支出|交易|扣款)[^\d]{0,12}(?:人民币|RMB|CNY|￥|¥)?\s*([\d,]+(?:\.\d{1,2})?)/i,
+    /(?:取出|支出|收入|存入|转入|入账)\s*(?:人民币|RMB|CNY|￥|¥)?\s*([\d,]+(?:\.\d{1,2})?)/i,
+    /(?:消费|支付|支出|交易|扣款|收入|存入|转入|入账)[^\d]{0,12}(?:人民币|RMB|CNY|￥|¥)?\s*([\d,]+(?:\.\d{1,2})?)/i,
     /(?:人民币|RMB|CNY|￥|¥)\s*([\d,]+(?:\.\d{1,2})?)/i,
     /金额[^\d]{0,6}([\d,]+(?:\.\d{1,2})?)/
   ]
@@ -56,14 +61,31 @@ export function parseBankSms(text: string): QuickEntryPrefill {
   ]
   const merchant = merchantPatterns.map(pattern => normalized.match(pattern)?.[1]?.trim()).find(Boolean)
   const isRefund = /退款|退货/.test(normalized)
-  const isIncome = !isRefund && /收入|入账|转入/.test(normalized) && !/支出|消费|扣款/.test(normalized)
+  const isIncome = !isRefund && /收入|入账|转入|存入/.test(normalized) && !/支出|消费|扣款/.test(normalized)
   const isTransfer = /充值|提现|还款|账户互转/.test(normalized)
   const bankName = normalized.match(/【([^】]+银行)】/)?.[1]
   return {
     amount: cleanAmount(amount), account: bankName ?? 'bank', type: isRefund ? 'refund' : isTransfer ? 'transfer' : isIncome ? 'income' : 'expense',
     merchant: merchant?.replace(/(?:余额|可用余额).*$/, '').trim(), note: normalized,
-    occurredAt: smsDate(normalized), source: 'bank'
+    occurredAt: smsDate(normalized, referenceDate), source: 'bank'
   }
+}
+
+/**
+ * Reads the plain-text queue written by iOS Shortcuts while the phone is locked.
+ * The recommended format is one SMS per line. We also accept timestamp-prefixed
+ * lines and a visible separator so an older shortcut can be upgraded safely.
+ */
+export function parseSmsQueue(text: string): QueuedSmsEntry[] {
+  const normalized = text.replace(/^\uFEFF/, '').replace(/\r/g, '\n')
+  const chunks = normalized.includes('---每日账本---')
+    ? normalized.split(/\n?---每日账本---\n?/)
+    : normalized.split(/\n+/)
+
+  return chunks.map(value => value.trim()).filter(Boolean).map(line => {
+    const prefixed = line.match(/^\s*\[?(20\d{2}[-/]\d{1,2}[-/]\d{1,2}[ T]\d{1,2}:\d{2}(?::\d{2})?)\]?\s*[|｜]\s*([\s\S]+)$/)
+    return { raw: (prefixed?.[2] ?? line).trim(), receivedAt: prefixed?.[1] }
+  }).filter(entry => /银行|尾号\d{4}|账户\d{4}|卡人民币/.test(entry.raw))
 }
 
 export function readQuickEntryPrefill(hash = location.hash): QuickEntryPrefill {

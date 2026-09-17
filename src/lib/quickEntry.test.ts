@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseBankSms, readQuickEntryPrefill } from './quickEntry'
+import { parseBankSms, parseSmsQueue, readQuickEntryPrefill } from './quickEntry'
 
 describe('快捷录入链接', () => {
   it('读取操作按钮传入的金额和账户', () => {
@@ -33,6 +33,18 @@ describe('快捷录入链接', () => {
   it('把招商银行向微信零钱充值识别为转账', () => {
     expect(parseBankSms('【招商银行】您账户8221于09月14日23:30在财付通-微信支付-微信零钱充值账户快捷支付10.00元，余额3476.62')).toMatchObject({
       amount: '10.00', account: '招商银行', merchant: '财付通-微信支付-微信零钱充值账户', type: 'transfer'
+    })
+  })
+
+  it('读取快捷指令追加的多条锁屏短信', () => {
+    const queue = `2026-09-17 19:18:00 | 您尾号9986卡人民币活期19:18取出16.00[网上支付-财付通]，可用余额：1,443.78元。【浦发银行】\n【建设银行】您账户5239于8月24日12:12:43ETC通行费支出8.27元,可用余额2947.79元。`
+    expect(parseSmsQueue(queue)).toHaveLength(2)
+    expect(parseSmsQueue(queue)[0]).toMatchObject({ receivedAt: '2026-09-17 19:18:00' })
+  })
+
+  it('识别银行收入短信', () => {
+    expect(parseBankSms('【建设银行】您账户5239于9月17日12:12收入人民币888.00元，可用余额3000元')).toMatchObject({
+      amount: '888.00', account: '建设银行', type: 'income'
     })
   })
 })

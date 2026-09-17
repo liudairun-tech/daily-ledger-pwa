@@ -3,6 +3,7 @@ import Papa from 'papaparse'
 import { makeFingerprint, normalizeText } from './fingerprint'
 import { parseAmountToCents } from './format'
 import type { Account, GenericColumnMap, ImportCandidate, TransactionSource, TransactionType } from '../types'
+import { parseBankSms, parseSmsQueue } from './quickEntry'
 
 export interface ParsedFile {
   source: Exclude<TransactionSource, 'manual' | 'ocr'> | 'unknown'
@@ -66,6 +67,42 @@ export async function parseStatement(file: File): Promise<ParsedFile> {
   return { source, headers: parsed.meta.fields, rows: parsed.data, text }
 }
 
+function compactBankName(value: string) {
+  return value.replace(/中国|股份有限公司|有限责任公司|银行|[\s·-]/g, '')
+}
+
+function accountForBankSms(requested: string | undefined, raw: string, accounts: Account[]) {
+  const lastFour = raw.match(/(?:尾号|账户|账号|卡号)\s*(\d{4})(?!\d)/)?.[1]
+  const requestedName = requested && requested !== 'bank' ? compactBankName(requested) : ''
+  const activeBanks = accounts.filter(account => account.type === 'bank' && !account.inactive)
+  const exact = activeBanks.find(account => {
+    const name = compactBankName(account.name)
+    return requestedName && name.length >= 2 && (name.includes(requestedName) || requestedName.includes(name))
+  })
+  const byTail = lastFour ? activeBanks.find(account => account.name.includes(lastFour)) : undefined
+  return (byTail ?? exact ?? activeBanks[0] ?? accounts.find(account => !account.inactive))?.id ?? ''
+}
+
+/** Turns a Shortcuts SMS queue file into reviewable import candidates. */
+export function candidatesFromSmsQueue(text: string, accounts: Account[]): ImportCandidate[] {
+  return parseSmsQueue(text).map(entry => {
+    const parsed = parseBankSms(entry.raw, entry.receivedAt)
+    const occurredAt = parsed.occurredAt ?? (entry.receivedAt ? new Date(entry.receivedAt.replace(' ', 'T')).toISOString() : '')
+    const amountCents = parseAmountToCents(parsed.amount ?? '')
+    const accountId = accountForBankSms(parsed.account, entry.raw, accounts)
+    const type = parsed.type ?? 'expense'
+    const merchant = parsed.merchant || parsed.account || '银行短信'
+    const issue = !amountCents ? '未识别到金额，请手工输入' : !occurredAt ? '未识别到交易时间，请手工选择' : !accountId ? '没有可用的银行卡账户' : undefined
+    return {
+      id: crypto.randomUUID(), source: 'bank', type, amountCents, occurredAt, merchant,
+      note: entry.raw, accountId, categoryId: guessCategory(merchant, entry.raw, type), raw: { sms: entry.raw },
+      confidence: issue ? 0.35 : 0.9,
+      fingerprint: makeFingerprint({ occurredAt: occurredAt || new Date(0).toISOString(), amountCents, type, merchant, accountId }),
+      state: issue ? 'invalid' : 'ready', issue
+    }
+  })
+}
+
 const parseDate = (value: string) => {
   if (!value) return ''
   const normalized = value.replace(/[年/.]/g, '-').replace('月', '-').replace('日', '').trim()
@@ -121,7 +158,7 @@ export function rowsToCandidates(parsed: ParsedFile, accountId: string, map?: Ge
 
 const categoryKeywords: Array<[string, string]> = [
   ['餐饮|早餐|午餐|晚餐|饭店|餐厅|咖啡|奶茶|饿了么|美团外卖|麦当劳|肯德基', 'cat-food'],
-  ['地铁|公交|滴滴|铁路|航空|加油|停车', 'cat-transport'],
+  ['地铁|公交|滴滴|铁路|航空|加油|停车|ETC|通行费', 'cat-transport'],
   ['医院|药房|医疗|诊所', 'cat-health'],
   ['电影|游戏|娱乐|视频|音乐', 'cat-fun'],
   ['房租|物业|水费|电费|燃气', 'cat-home'],
