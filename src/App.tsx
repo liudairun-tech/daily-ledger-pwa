@@ -9,12 +9,12 @@ import { markDuplicates } from './lib/dedupe'
 import { decryptBackup, encryptBackup, readAllData, restoreAllData, transactionsCsv, type EncryptedBackup } from './lib/backup'
 import { matchQuickEntryAccount, readQuickEntryPrefill, type QuickEntryPrefill } from './lib/quickEntry'
 import { prepareImageForOcr } from './lib/ocr'
+import { isInCustomDateRange, isInSummaryRange, summaryRangeLabels, type SummaryRange } from './lib/dateRange'
 
 const MonthBars = lazy(() => import('./components/Charts').then(module => ({ default: module.MonthBars })))
 const SpendingPie = lazy(() => import('./components/Charts').then(module => ({ default: module.SpendingPie })))
 
 type Route = 'home' | 'transactions' | 'add' | 'import' | 'settings'
-export type SummaryRange = 'week' | 'month' | 'year'
 const navItems: Array<{ route: Route; icon: string; label: string }> = [
   { route: 'home', icon: '⌂', label: '首页' }, { route: 'transactions', icon: '≡', label: '流水' },
   { route: 'add', icon: '+', label: '记账' }, { route: 'import', icon: '⇩', label: '导入' }, { route: 'settings', icon: '⚙', label: '设置' }
@@ -63,14 +63,9 @@ function HomePage() {
   const transactions = useLiveQuery(() => db.transactions.orderBy('occurredAt').reverse().toArray(), []) ?? []
   const categories = useLiveQuery(() => db.categories.toArray(), []) ?? []
   const [range, setRange] = useState<SummaryRange>('month')
-  const today = localDateKey(new Date())
-  const todayItems = transactions.filter(t => localDateKey(t.occurredAt) === today)
-  const start = new Date(); start.setHours(0, 0, 0, 0)
-  if (range === 'week') start.setDate(start.getDate() - (start.getDay() + 6) % 7)
-  if (range === 'month') start.setDate(1)
-  if (range === 'year') { start.setMonth(0, 1) }
-  const rangeItems = transactions.filter(t => new Date(t.occurredAt).getTime() >= start.getTime() && new Date(t.occurredAt).getTime() <= Date.now())
-  const rangeLabel = { week: '本周', month: '本月', year: '本年' }[range]
+  const now = new Date()
+  const rangeItems = transactions.filter(t => isInSummaryRange(t.occurredAt, range, now))
+  const rangeLabel = summaryRangeLabels[range].full
   const sum = (items: LedgerTransaction[], types: TransactionType[]) => items.filter(t => types.includes(t.type)).reduce((n, t) => n + t.amountCents, 0)
   const expense = sum(rangeItems, ['expense']) - sum(rangeItems, ['refund'])
   const income = sum(rangeItems, ['income'])
@@ -80,7 +75,7 @@ function HomePage() {
   return <div className="page home-page">
     <PageHeader eyebrow={new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }).format(new Date())} title="今天，记清每一笔" action={<button className="avatar" onClick={() => go('settings')}>账</button>} />
     {needsBackup && transactions.length > 0 && <button className="notice" onClick={() => go('settings')}>你的账本该备份了 <b>去备份 →</b></button>}
-    <div className="period-tabs" aria-label="统计周期">{(['week', 'month', 'year'] as SummaryRange[]).map(value => <button key={value} className={range === value ? 'selected' : ''} onClick={() => setRange(value)}>{{ week: '周', month: '月', year: '年' }[value]}</button>)}</div>
+    <div className="period-tabs" aria-label="统计周期">{(['day', 'week', 'month', 'year'] as SummaryRange[]).map(value => <button key={value} className={range === value ? 'selected' : ''} onClick={() => setRange(value)}>{summaryRangeLabels[value].short}</button>)}</div>
     <section className="balance-card">
       <span>{rangeLabel}结余</span><strong>{yuan(income - expense)}</strong>
       <div><p><i className="dot income" />收入 <b>{yuan(income)}</b></p><p><i className="dot expense" />支出 <b>{yuan(expense)}</b></p></div>
@@ -91,8 +86,8 @@ function HomePage() {
     </div>
     <section className="section-card"><div className="section-title"><h2>{rangeLabel}收支趋势</h2><span>收入与支出</span></div><Suspense fallback={<div className="empty-chart">正在准备图表…</div>}><MonthBars transactions={rangeItems} range={range} /></Suspense></section>
     <section className="section-card"><div className="section-title"><h2>{rangeLabel}花到哪里</h2><span>{rangeItems.length} 笔</span></div><Suspense fallback={<div className="empty-chart">正在准备图表…</div>}><SpendingPie transactions={rangeItems} categories={categories} rangeLabel={rangeLabel} /></Suspense></section>
-    <section className="section-card"><div className="section-title"><h2>今日流水</h2><button onClick={() => go('transactions')}>查看全部</button></div>
-      <TransactionList transactions={todayItems.slice(0, 5)} categories={categories} compact />
+    <section className="section-card"><div className="section-title"><h2>{rangeLabel}流水</h2><button onClick={() => go('transactions')}>筛选全部</button></div>
+      <TransactionList transactions={rangeItems.slice(0, 5)} categories={categories} compact />
     </section>
   </div>
 }
@@ -115,9 +110,10 @@ function TransactionsPage() {
   const all = useLiveQuery(() => db.transactions.orderBy('occurredAt').reverse().toArray(), []) ?? []
   const categories = useLiveQuery(() => db.categories.toArray(), []) ?? []
   const accounts = useLiveQuery(() => db.accounts.toArray(), []) ?? []
-  const [query, setQuery] = useState(''), [account, setAccount] = useState(''), [source, setSource] = useState('')
+  const [query, setQuery] = useState(''), [account, setAccount] = useState(''), [source, setSource] = useState(''), [category, setCategory] = useState('')
+  const [startDate, setStartDate] = useState(''), [endDate, setEndDate] = useState('')
   const [editing, setEditing] = useState<LedgerTransaction>()
-  const filtered = all.filter(item => (!query || `${item.merchant}${item.note}`.toLowerCase().includes(query.toLowerCase())) && (!account || item.accountId === account) && (!source || item.source === source))
+  const filtered = all.filter(item => (!query || `${item.merchant}${item.note}`.toLowerCase().includes(query.toLowerCase())) && (!account || item.accountId === account) && (!source || item.source === source) && (!category || item.categoryId === category) && isInCustomDateRange(item.occurredAt, startDate, endDate))
   const grouped = filtered.reduce((result, item) => {
     const key = localDateKey(item.occurredAt)
     result.set(key, [...(result.get(key) ?? []), item])
@@ -129,7 +125,14 @@ function TransactionsPage() {
     <div className="filter-row">
       <select value={account} onChange={e => setAccount(e.target.value)}><option value="">全部账户</option>{accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
       <select value={source} onChange={e => setSource(e.target.value)}><option value="">全部来源</option><option value="manual">手工</option><option value="alipay">支付宝</option><option value="wechat">微信</option><option value="bank">银行</option><option value="ocr">截图</option></select>
+      <select value={category} onChange={e => setCategory(e.target.value)}><option value="">全部分类</option>{categories.map(c => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}</select>
     </div>
+    <div className="date-filter" aria-label="自定义日期范围">
+      <label><span>开始日期</span><input type="date" value={startDate} max={endDate || undefined} onChange={e => setStartDate(e.target.value)} /></label>
+      <label><span>结束日期</span><input type="date" value={endDate} min={startDate || undefined} onChange={e => setEndDate(e.target.value)} /></label>
+      {(startDate || endDate) && <button onClick={() => { setStartDate(''); setEndDate('') }}>清除日期</button>}
+    </div>
+    <p className="filter-summary">当前显示 {filtered.length} 笔</p>
     {[...grouped.entries()].map(([day, items]) => <section className="day-group" key={day}><h2>{day} <span>{items.length} 笔</span></h2><TransactionList transactions={items} categories={categories} onEdit={setEditing} /></section>)}
     {!filtered.length && <TransactionList transactions={[]} categories={categories} />}
     {editing && <div className="modal"><div className="modal-card"><TransactionForm initial={editing} onDone={() => setEditing(undefined)} /></div></div>}
