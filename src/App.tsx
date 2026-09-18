@@ -59,35 +59,45 @@ function PageHeader({ eyebrow, title, action }: { eyebrow?: string; title: strin
   return <header className="page-header"><div>{eyebrow && <span>{eyebrow}</span>}<h1>{title}</h1></div>{action}</header>
 }
 
+function RangeTabs({ value, onChange, label }: { value: SummaryRange; onChange: (value: SummaryRange) => void; label: string }) {
+  return <div className="period-tabs" aria-label={label}>{(['day', 'week', 'month', 'year'] as SummaryRange[]).map(range => <button key={range} className={value === range ? 'selected' : ''} onClick={() => onChange(range)}>{summaryRangeLabels[range].short}</button>)}</div>
+}
+
 function HomePage() {
   const transactions = useLiveQuery(() => db.transactions.orderBy('occurredAt').reverse().toArray(), []) ?? []
   const categories = useLiveQuery(() => db.categories.toArray(), []) ?? []
-  const [range, setRange] = useState<SummaryRange>('month')
+  const [balanceRange, setBalanceRange] = useState<SummaryRange>('month')
+  const [trendRange, setTrendRange] = useState<SummaryRange>('month')
+  const [spendingRange, setSpendingRange] = useState<SummaryRange>('month')
+  const [transactionsRange, setTransactionsRange] = useState<SummaryRange>('day')
   const now = new Date()
-  const rangeItems = transactions.filter(t => isInSummaryRange(t.occurredAt, range, now))
-  const rangeLabel = summaryRangeLabels[range].full
+  const itemsFor = (range: SummaryRange) => transactions.filter(t => isInSummaryRange(t.occurredAt, range, now))
+  const balanceItems = itemsFor(balanceRange)
+  const trendItems = itemsFor(trendRange)
+  const spendingItems = itemsFor(spendingRange)
+  const visibleTransactions = itemsFor(transactionsRange)
   const sum = (items: LedgerTransaction[], types: TransactionType[]) => items.filter(t => types.includes(t.type)).reduce((n, t) => n + t.amountCents, 0)
-  const expense = sum(rangeItems, ['expense']) - sum(rangeItems, ['refund'])
-  const income = sum(rangeItems, ['income'])
+  const expense = sum(balanceItems, ['expense']) - sum(balanceItems, ['refund'])
+  const income = sum(balanceItems, ['income'])
   const changed = useLiveQuery(() => db.settings.get('changesSinceBackup'), [])
   const lastBackup = useLiveQuery(() => db.settings.get('lastBackupAt'), [])
   const needsBackup = Number(changed?.value ?? 0) >= 50 || !lastBackup?.value || Date.now() - new Date(lastBackup.value).getTime() > 7 * 86_400_000
   return <div className="page home-page">
     <PageHeader eyebrow={new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }).format(new Date())} title="今天，记清每一笔" action={<button className="avatar" onClick={() => go('settings')}>账</button>} />
     {needsBackup && transactions.length > 0 && <button className="notice" onClick={() => go('settings')}>你的账本该备份了 <b>去备份 →</b></button>}
-    <div className="period-tabs" aria-label="统计周期">{(['day', 'week', 'month', 'year'] as SummaryRange[]).map(value => <button key={value} className={range === value ? 'selected' : ''} onClick={() => setRange(value)}>{summaryRangeLabels[value].short}</button>)}</div>
     <section className="balance-card">
-      <span>{rangeLabel}结余</span><strong>{yuan(income - expense)}</strong>
-      <div><p><i className="dot income" />收入 <b>{yuan(income)}</b></p><p><i className="dot expense" />支出 <b>{yuan(expense)}</b></p></div>
+      <div className="balance-head"><span>{summaryRangeLabels[balanceRange].full}结余</span><RangeTabs value={balanceRange} onChange={setBalanceRange} label="结余统计周期" /></div>
+      <strong>{yuan(income - expense)}</strong>
+      <div className="balance-breakdown"><p><i className="dot income" />收入 <b>{yuan(income)}</b></p><p><i className="dot expense" />支出 <b>{yuan(expense)}</b></p></div>
     </section>
     <div className="quick-grid">
       <button onClick={() => go('add')}><span>＋</span><b>快速记账</b><small>手工记录一笔</small></button>
       <button onClick={() => go('import')}><span>⌁</span><b>识别账单</b><small>截图或文件导入</small></button>
     </div>
-    <section className="section-card"><div className="section-title"><h2>{rangeLabel}收支趋势</h2><span>收入与支出</span></div><Suspense fallback={<div className="empty-chart">正在准备图表…</div>}><MonthBars transactions={rangeItems} range={range} /></Suspense></section>
-    <section className="section-card"><div className="section-title"><h2>{rangeLabel}花到哪里</h2><span>{rangeItems.length} 笔</span></div><Suspense fallback={<div className="empty-chart">正在准备图表…</div>}><SpendingPie transactions={rangeItems} categories={categories} rangeLabel={rangeLabel} /></Suspense></section>
-    <section className="section-card"><div className="section-title"><h2>{rangeLabel}流水</h2><button onClick={() => go('transactions')}>筛选全部</button></div>
-      <TransactionList transactions={rangeItems.slice(0, 5)} categories={categories} compact />
+    <section className="section-card"><div className="section-title stacked"><div><h2>{summaryRangeLabels[trendRange].full}收支趋势</h2><span>收入与支出</span></div><RangeTabs value={trendRange} onChange={setTrendRange} label="收支趋势统计周期" /></div><Suspense fallback={<div className="empty-chart">正在准备图表…</div>}><MonthBars transactions={trendItems} range={trendRange} /></Suspense></section>
+    <section className="section-card"><div className="section-title stacked"><div><h2>{summaryRangeLabels[spendingRange].full}花到哪里</h2><span>{spendingItems.length} 笔</span></div><RangeTabs value={spendingRange} onChange={setSpendingRange} label="分类支出统计周期" /></div><Suspense fallback={<div className="empty-chart">正在准备图表…</div>}><SpendingPie transactions={spendingItems} categories={categories} rangeLabel={summaryRangeLabels[spendingRange].full} /></Suspense></section>
+    <section className="section-card"><div className="section-title stacked"><div><h2>{summaryRangeLabels[transactionsRange].full}流水</h2><button onClick={() => go('transactions')}>筛选全部</button></div><RangeTabs value={transactionsRange} onChange={setTransactionsRange} label="流水统计周期" /></div>
+      <TransactionList transactions={visibleTransactions.slice(0, 5)} categories={categories} compact />
     </section>
   </div>
 }

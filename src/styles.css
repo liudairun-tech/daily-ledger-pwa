@@ -29,21 +29,23 @@ p { line-height: 1.55; }
 .notice { width: 100%; border: 0; border-radius: 14px; padding: 12px 15px; margin: -7px 0 14px; display: flex; justify-content: space-between; background: #fff3cd; color: #755607; font-size: 13px; }
 .balance-card { color: white; background: linear-gradient(145deg, #0b1220, #182b3e 70%, #145f55); padding: 24px; border-radius: 25px; box-shadow: 0 20px 44px #0b12202d; overflow: hidden; position: relative; }
 .balance-card::after { content: ''; position: absolute; width: 170px; height: 170px; border-radius: 50%; background: #16c79a18; right: -58px; top: -85px; border: 25px solid #ffffff08; }
-.balance-card > span { color: #b5c2cf; font-size: 13px; }
+.balance-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.balance-head > span { color: #b5c2cf; font-size: 13px; white-space: nowrap; }
 .balance-card > strong { display: block; font-size: 35px; margin: 9px 0 24px; letter-spacing: -.04em; }
-.balance-card > div { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.balance-card > .balance-breakdown { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .balance-card p { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 7px; color: #aebdca; font-size: 12px; margin: 0; }
 .balance-card p b { grid-column: 2; color: white; font-size: 15px; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green-bright); }.dot.expense { background: var(--orange); }
-.period-tabs { width: 224px; margin: 0 0 10px auto; padding: 3px; display: grid; grid-template-columns: repeat(4, 1fr); border-radius: 12px; background: #e8edf3; }
+.period-tabs { width: 172px; margin: 0; padding: 3px; display: grid; grid-template-columns: repeat(4, 1fr); border-radius: 12px; background: #e8edf3; }
 .period-tabs button { border: 0; border-radius: 9px; padding: 7px 4px; background: transparent; color: var(--muted); font-size: 12px; }
 .period-tabs button.selected { background: white; color: var(--ink); box-shadow: 0 3px 10px #1c2d3d18; font-weight: 750; }
+.balance-card .period-tabs { width: 156px; background: #ffffff14; }.balance-card .period-tabs button { color: #aebdca; }.balance-card .period-tabs button.selected { color: white; background: #ffffff20; box-shadow: none; }
 .quick-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px 0; }
 .quick-grid button { border: 0; border-radius: 18px; text-align: left; padding: 16px; display: grid; grid-template-columns: 40px 1fr; background: var(--card); box-shadow: 0 8px 24px #25425e0c; }
 .quick-grid button > span { grid-row: span 2; width: 34px; height: 34px; border-radius: 12px; display: grid; place-items: center; color: var(--green); background: #e1f8f2; font-size: 22px; font-weight: 700; }
 .quick-grid b { font-size: 14px; }.quick-grid small { color: var(--muted); margin-top: 3px; font-size: 10px; }
 .section-card { background: var(--card); border: 1px solid rgba(231,237,243,.8); border-radius: 20px; padding: 17px; margin: 14px 0; box-shadow: 0 8px 24px #25425e0b; }
 .section-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.section-title.stacked { align-items: flex-start; gap: 10px; }.section-title.stacked > div:first-child { display: grid; gap: 4px; min-width: 0; }.section-title.stacked .period-tabs { flex: none; }
 .section-title span, .section-title button { color: var(--muted); font-size: 12px; border: 0; background: none; }
 .chart { width: 100%; height: 190px; }.empty-chart { height: 130px; display: grid; place-items: center; color: var(--muted); font-size: 13px; }
 .transaction-list { display: grid; }
