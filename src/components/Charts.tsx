@@ -5,7 +5,7 @@ import { GridComponent, TooltipComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import type { Category, LedgerTransaction } from '../types'
 import { localDateKey } from '../lib/format'
-import type { SummaryRange } from '../App'
+import type { SummaryRange } from '../lib/dateRange'
 
 echarts.use([BarChart, PieChart, GridComponent, TooltipComponent, CanvasRenderer])
 
@@ -36,7 +36,9 @@ export function SpendingPie({ transactions, categories, rangeLabel }: { transact
 
 export function MonthBars({ transactions, range }: { transactions: LedgerTransaction[]; range: SummaryRange }) {
   const now = new Date()
-  const buckets = range === 'year'
+  const buckets = range === 'day'
+    ? [{ key: localDateKey(now), label: '今天' }]
+    : range === 'year'
     ? Array.from({ length: 12 }, (_, month) => ({ key: `${now.getFullYear()}-${String(month + 1).padStart(2, '0')}`, label: `${month + 1}月` }))
     : range === 'month'
       ? Array.from({ length: new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() }, (_, day) => {
