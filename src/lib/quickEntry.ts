@@ -1,4 +1,4 @@
-import type { AccountType, TransactionSource, TransactionType } from '../types'
+import type { Account, AccountType, TransactionSource, TransactionType } from '../types'
 
 export interface QuickEntryPrefill {
   amount?: string
@@ -86,6 +86,37 @@ export function parseSmsQueue(text: string): QueuedSmsEntry[] {
     const prefixed = line.match(/^\s*\[?(20\d{2}[-/]\d{1,2}[-/]\d{1,2}[ T]\d{1,2}:\d{2}(?::\d{2})?)\]?\s*[|｜]\s*([\s\S]+)$/)
     return { raw: (prefixed?.[2] ?? line).trim(), receivedAt: prefixed?.[1] }
   }).filter(entry => /银行|尾号\d{4}|账户\d{4}|卡人民币/.test(entry.raw))
+}
+
+function compactAccountName(value: string) {
+  return value.replace(/中国|股份有限公司|有限责任公司|储蓄卡|信用卡|银行卡|银行|[\s·-]/g, '')
+}
+
+/** Matches an SMS/link prefill to the user's account, preferring the card tail over the bank name. */
+export function matchQuickEntryAccount(accounts: Account[], prefill?: QuickEntryPrefill) {
+  if (!accounts.length) return undefined
+  const requested = prefill?.account
+  const direct = accounts.find(account => account.id === requested || account.name === requested)
+  if (direct) return direct
+
+  const lastFour = prefill?.note?.match(/(?:尾号|账户|账号|卡号)\s*(\d{4})(?!\d)/)?.[1]
+  if (lastFour) {
+    const byTail = accounts.find(account => account.type === 'bank' && account.name.includes(lastFour))
+    if (byTail) return byTail
+  }
+
+  if (requested && requested !== 'bank') {
+    const requestedName = compactAccountName(requested)
+    const byBankName = accounts.find(account => {
+      const accountName = compactAccountName(account.name)
+      return account.type === 'bank' && requestedName.length >= 2 && (accountName.includes(requestedName) || requestedName.includes(accountName))
+    })
+    if (byBankName) return byBankName
+  }
+
+  return accounts.find(account => account.type === requested)
+    ?? accounts.find(account => account.type === prefill?.source)
+    ?? accounts[0]
 }
 
 export function readQuickEntryPrefill(hash = location.hash): QuickEntryPrefill {

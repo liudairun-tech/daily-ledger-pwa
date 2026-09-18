@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseBankSms, parseSmsQueue, readQuickEntryPrefill } from './quickEntry'
+import { matchQuickEntryAccount, parseBankSms, parseSmsQueue, readQuickEntryPrefill } from './quickEntry'
 
 describe('快捷录入链接', () => {
   it('读取操作按钮传入的金额和账户', () => {
@@ -46,5 +46,22 @@ describe('快捷录入链接', () => {
     expect(parseBankSms('【建设银行】您账户5239于9月17日12:12收入人民币888.00元，可用余额3000元')).toMatchObject({
       amount: '888.00', account: '建设银行', type: 'income'
     })
+  })
+
+  it('快速入口优先按卡号尾号匹配账户，而不是选择第一张银行卡', () => {
+    const accounts = [
+      { id: 'spd', name: '浦发银行 9986', type: 'bank' as const, openingBalanceCents: 0, openingDate: '', inactive: false, createdAt: '' },
+      { id: 'ccb', name: '建设银行 5239', type: 'bank' as const, openingBalanceCents: 0, openingDate: '', inactive: false, createdAt: '' }
+    ]
+    const prefill = parseBankSms('【建设银行】您账户5239于9月18日23:26支出2.00元，可用余额100元。')
+    expect(matchQuickEntryAccount(accounts, prefill)?.id).toBe('ccb')
+  })
+
+  it('没有卡号尾号时按银行名称匹配带尾号的账户名', () => {
+    const accounts = [
+      { id: 'spd', name: '浦发银行 9986', type: 'bank' as const, openingBalanceCents: 0, openingDate: '', inactive: false, createdAt: '' },
+      { id: 'cmb', name: '招商银行 8221', type: 'bank' as const, openingBalanceCents: 0, openingDate: '', inactive: false, createdAt: '' }
+    ]
+    expect(matchQuickEntryAccount(accounts, { account: '招商银行', source: 'bank' })?.id).toBe('cmb')
   })
 })
