@@ -7,7 +7,7 @@ import { makeFingerprint } from './lib/fingerprint'
 import { candidatesFromOcr, candidatesFromSmsQueue, extractTextFromFile, guessCategory, hashBuffer, parseStatement, rowsToCandidates, type ParsedFile } from './lib/importers'
 import { markDuplicates } from './lib/dedupe'
 import { decryptBackup, encryptBackup, readAllData, restoreAllData, transactionsCsv, type EncryptedBackup } from './lib/backup'
-import { readQuickEntryPrefill, type QuickEntryPrefill } from './lib/quickEntry'
+import { matchQuickEntryAccount, readQuickEntryPrefill, type QuickEntryPrefill } from './lib/quickEntry'
 import { prepareImageForOcr } from './lib/ocr'
 
 const MonthBars = lazy(() => import('./components/Charts').then(module => ({ default: module.MonthBars })))
@@ -147,10 +147,8 @@ function TransactionForm({ initial, prefill, onDone }: { initial?: LedgerTransac
   const [error, setError] = useState('')
   useEffect(() => {
     if (form.accountId || !accounts[0]) return
-    const requested = prefill?.account
-    const matched = accounts.find(account => account.id === requested || account.type === requested || account.name === requested)
-    const sourceFallback = accounts.find(account => account.type === prefill?.source)
-    setForm(value => ({ ...value, accountId: (matched ?? sourceFallback ?? accounts[0])!.id }))
+    const matched = matchQuickEntryAccount(accounts, prefill)
+    setForm(value => ({ ...value, accountId: matched!.id }))
   }, [accounts, form.accountId, prefill?.account])
   const availableCategories = categories.filter(c => c.kind === (form.type === 'income' ? 'income' : 'expense'))
   const patch = (value: Partial<FormState>) => setForm(previous => ({ ...previous, ...value }))
