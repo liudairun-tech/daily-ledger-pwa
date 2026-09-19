@@ -96,8 +96,8 @@ function HomePage() {
     </div>
     <section className="section-card"><div className="section-title stacked"><div><h2>{summaryRangeLabels[trendRange].full}收支趋势</h2><span>收入与支出</span></div><RangeTabs value={trendRange} onChange={setTrendRange} label="收支趋势统计周期" /></div><Suspense fallback={<div className="empty-chart">正在准备图表…</div>}><MonthBars transactions={trendItems} range={trendRange} /></Suspense></section>
     <section className="section-card"><div className="section-title stacked"><div><h2>{summaryRangeLabels[spendingRange].full}花到哪里</h2><span>{spendingItems.length} 笔</span></div><RangeTabs value={spendingRange} onChange={setSpendingRange} label="分类支出统计周期" /></div><Suspense fallback={<div className="empty-chart">正在准备图表…</div>}><SpendingPie transactions={spendingItems} categories={categories} rangeLabel={summaryRangeLabels[spendingRange].full} /></Suspense></section>
-    <section className="section-card"><div className="section-title stacked"><div><h2>{summaryRangeLabels[transactionsRange].full}流水</h2><button onClick={() => go('transactions')}>筛选全部</button></div><RangeTabs value={transactionsRange} onChange={setTransactionsRange} label="流水统计周期" /></div>
-      <TransactionList transactions={visibleTransactions.slice(0, 5)} categories={categories} compact />
+    <section className="section-card"><div className="section-title stacked"><div><h2>{summaryRangeLabels[transactionsRange].full}流水</h2><button onClick={() => go('transactions')}>{visibleTransactions.length} 笔 · 更多筛选</button></div><RangeTabs value={transactionsRange} onChange={setTransactionsRange} label="流水统计周期" /></div>
+      <TransactionList transactions={visibleTransactions} categories={categories} compact />
     </section>
   </div>
 }
