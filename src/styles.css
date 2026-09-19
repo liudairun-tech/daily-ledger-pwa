@@ -52,7 +52,7 @@ p { line-height: 1.55; }
 .transaction-row { width: 100%; border: 0; border-bottom: 1px solid var(--line); background: transparent; padding: 12px 0; display: grid; grid-template-columns: 42px 1fr auto; align-items: center; gap: 11px; text-align: left; }
 .transaction-row:last-child { border: 0; }.category-icon { width: 42px; height: 42px; border-radius: 14px; display: grid; place-items: center; font-size: 20px; }
 .transaction-copy { display: grid; gap: 4px; min-width: 0; }.transaction-copy b { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 14px; }.transaction-copy small { color: var(--muted); font-size: 11px; }
-.transaction-row > strong { color: var(--orange); font-size: 14px; }.transaction-row .money-positive { color: var(--green); }
+.transaction-row > strong { font-size: 14px; }.transaction-row .money-expense { color: var(--green); }.transaction-row .money-income { color: #e34d59; }.transaction-row .money-transfer { color: var(--muted); }
 .empty-state { min-height: 130px; display: grid; place-items: center; align-content: center; gap: 5px; color: var(--muted); }.empty-state > span { font-size: 30px; }.empty-state b { color: var(--ink); }.empty-state small { font-size: 11px; }
 .search-row input { width: 100%; border: 1px solid var(--line); border-radius: 15px; background: white; padding: 13px 15px; outline: none; }
 .filter-row { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin: 10px 0; }.filter-row select, .review-head select { border: 1px solid var(--line); border-radius: 12px; padding: 10px; background: white; }.filter-row select:last-child { grid-column: 1 / -1; }

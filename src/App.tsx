@@ -107,11 +107,13 @@ function TransactionList({ transactions, categories, compact = false, onEdit }: 
   if (!transactions.length) return <div className="empty-state"><span>☁</span><b>还没有记录</b><small>记下第一笔，趋势会从这里开始</small></div>
   return <div className="transaction-list">{transactions.map(item => {
     const category = categoryMap.get(item.categoryId ?? '')
-    const positive = transactionImpact(item) >= 0
+    const impact = transactionImpact(item)
+    const amountClass = impact > 0 ? 'money-income' : impact < 0 ? 'money-expense' : 'money-transfer'
+    const sign = impact > 0 ? '+' : impact < 0 ? '−' : ''
     return <button className="transaction-row" key={item.id} onClick={() => onEdit?.(item)}>
       <span className="category-icon" style={{ background: `${category?.color ?? '#64748b'}1d` }}>{item.type === 'transfer' ? '⇄' : category?.emoji ?? '•'}</span>
       <span className="transaction-copy"><b>{item.merchant || typeLabel[item.type]}</b><small>{category?.name ?? typeLabel[item.type]} · {new Date(item.occurredAt).toLocaleString('zh-CN', compact ? { hour: '2-digit', minute: '2-digit' } : { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</small></span>
-      <strong className={positive ? 'money-positive' : ''}>{positive ? '+' : '−'}{yuan(item.amountCents).replace('¥', '')}</strong>
+      <strong className={amountClass}>{sign}{yuan(item.amountCents).replace('¥', '')}</strong>
     </button>
   })}</div>
 }
