@@ -64,4 +64,12 @@ describe('快捷录入链接', () => {
     ]
     expect(matchQuickEntryAccount(accounts, { account: '招商银行', source: 'bank' })?.id).toBe('cmb')
   })
+
+  it('手工记账默认选择微信账户', () => {
+    const accounts = [
+      { id: 'cash', name: '现金', type: 'cash' as const, openingBalanceCents: 0, openingDate: '', inactive: false, createdAt: '' },
+      { id: 'wechat', name: '微信', type: 'wechat' as const, openingBalanceCents: 0, openingDate: '', inactive: false, createdAt: '' }
+    ]
+    expect(matchQuickEntryAccount(accounts, {})?.id).toBe('wechat')
+  })
 })

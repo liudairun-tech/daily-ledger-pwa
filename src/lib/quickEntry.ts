@@ -95,6 +95,8 @@ function compactAccountName(value: string) {
 /** Matches an SMS/link prefill to the user's account, preferring the card tail over the bank name. */
 export function matchQuickEntryAccount(accounts: Account[], prefill?: QuickEntryPrefill) {
   if (!accounts.length) return undefined
+  const hasPrefill = Boolean(prefill && Object.values(prefill).some(value => value !== undefined && value !== ''))
+  if (!hasPrefill) return accounts.find(account => account.type === 'wechat') ?? accounts[0]
   const requested = prefill?.account
   const direct = accounts.find(account => account.id === requested || account.name === requested)
   if (direct) return direct
