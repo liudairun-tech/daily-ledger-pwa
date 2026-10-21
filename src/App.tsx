@@ -228,9 +228,11 @@ function ImportPage() {
 
   async function chooseFile(file?: File) {
     if (!file) return
-    setMessage(''); setCandidates([]); setParsed(undefined)
+    setMessage(''); setCandidates([]); setSelected(new Set()); setParsed(undefined); setFileMeta(undefined)
     const hash = await hashBuffer(await file.arrayBuffer())
-    if (await db.importBatches.where('fileHash').equals(hash).first()) { setMessage('这份文件已经导入过，无需重复处理。'); return }
+    // Queue files are cumulative and may contain records not selected on a previous import.
+    const previouslyImported = await db.importBatches.where('fileHash').equals(hash).first()
+    if (previouslyImported && file.type.startsWith('image/')) { setMessage('这张图片已经导入过。'); return }
     if (file.type.startsWith('image/')) {
       setBusy('正在本机识别图片，首次使用需下载中文识别模型…')
       try {
@@ -257,9 +259,10 @@ function ImportPage() {
           const firstAccount = marked.find(candidate => candidate.accountId)?.accountId
           if (firstAccount) setAccountId(firstAccount)
           setFileMeta({ name: file.name, hash, source: 'bank', smsQueue: true })
-          setCandidates(marked)
-          setSelected(new Set(marked.filter(candidate => candidate.state === 'ready').map(candidate => candidate.id)))
-          setMessage(`识别到 ${marked.length} 条银行短信；请核对黄色疑似重复项。`)
+          setCandidates(marked.sort((a, b) => (Date.parse(b.occurredAt) || 0) - (Date.parse(a.occurredAt) || 0)))
+          setSelected(new Set())
+          const duplicates = marked.filter(candidate => candidate.state === 'exact-duplicate').length
+          setMessage(`已重新读取 ${marked.length} 条银行短信，按交易时间倒序显示；已记账 ${duplicates} 条。请手工勾选需要导入的记录。文件修改时间：${new Date(file.lastModified).toLocaleString('zh-CN')}。如果缺少最新短信，请先在“文件”中确认选中的是最新的待处理文件，等待 iCloud 同步后重新选择。`)
         } finally { setBusy('') }
         return
       }
@@ -314,8 +317,10 @@ function ImportPage() {
 
   async function confirmImport() {
     if (!fileMeta) return
-    const chosen = candidates.filter(c => selected.has(c.id) && c.state !== 'exact-duplicate' && c.state !== 'invalid')
+    const checked = await markDuplicates(candidates.filter(c => selected.has(c.id) && c.state !== 'exact-duplicate' && c.state !== 'invalid'))
+    const chosen = checked.filter(c => c.state !== 'exact-duplicate' && c.state !== 'invalid')
     if (!chosen.length) return setMessage('没有选择可导入的记录')
+    const chosenIds = new Set(chosen.map(item => item.id))
     const batchId = crypto.randomUUID(), now = new Date().toISOString()
     const transactions: LedgerTransaction[] = chosen.map(item => ({
       id: crypto.randomUUID(), type: item.type, amountCents: item.amountCents, currency: 'CNY', occurredAt: item.occurredAt,
@@ -326,7 +331,7 @@ function ImportPage() {
     }))
     await db.transaction('rw', db.importBatches, db.importCandidates, db.transactions, async () => {
       await db.importBatches.add({ id: batchId, source: fileMeta.source, fileName: fileMeta.name, fileHash: fileMeta.hash, importedAt: now, totalCount: candidates.length, importedCount: chosen.length, duplicateCount: candidates.filter(c => c.state.includes('duplicate')).length, errorCount: candidates.filter(c => c.state === 'invalid').length })
-      await db.importCandidates.bulkPut(candidates.map(c => ({ ...c, batchId, state: selected.has(c.id) ? 'imported' : c.state === 'ready' ? 'skipped' : c.state })))
+      await db.importCandidates.bulkPut(candidates.map(c => ({ ...c, batchId, state: chosenIds.has(c.id) ? 'imported' : c.state === 'ready' ? 'skipped' : c.state })))
       await db.transactions.bulkAdd(transactions)
     })
     await noteDataChange(); setCandidates([]); setParsed(undefined); setFileMeta(undefined); setMessage(`已安全导入 ${chosen.length} 笔，重复和异常项未入账。`)
@@ -338,7 +343,7 @@ function ImportPage() {
     <section className="import-hero">
       <div className="scan-orbit">⌁</div><h2>账单、截图或锁屏短信</h2><p>支持锁屏短信队列、支付宝/微信账单、银行卡 CSV，以及照片和截图 OCR。</p>
       <button className="primary" onClick={() => inputRef.current?.click()}>选择待处理文件或照片</button>
-      <input ref={inputRef} hidden type="file" accept=".csv,.txt,.zip,text/csv,text/plain,image/*" onChange={e => void chooseFile(e.target.files?.[0])} />
+      <input ref={inputRef} hidden type="file" accept=".csv,.txt,.zip,text/csv,text/plain,image/*" onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; void chooseFile(file).catch(error => { setBusy(''); setMessage(error instanceof Error ? error.message : '读取失败，请重新选择文件') }) }} />
     </section>
     <div className="privacy-note"><b>隐私说明</b><span>图片和账单只在此设备处理。OCR 首次使用会下载语言模型，但不会上传图片。</span></div>
     {busy && <div className="progress-card"><span className="spinner" />{busy}</div>}
