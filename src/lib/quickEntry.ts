@@ -77,15 +77,22 @@ export function parseBankSms(text: string, referenceDate?: string): QuickEntryPr
  * lines and a visible separator so an older shortcut can be upgraded safely.
  */
 export function parseSmsQueue(text: string): QueuedSmsEntry[] {
-  const normalized = text.replace(/^\uFEFF/, '').replace(/\r/g, '\n')
-  const chunks = normalized.includes('---每日账本---')
-    ? normalized.split(/\n?---每日账本---\n?/)
-    : normalized.split(/\n+/)
+  const normalized = text.replace(/^\uFEFF/, '').replace(/\r\n?|[\u2028\u2029]/g, '\n')
+  // Shortcuts can append entries without a newline. The timestamp + pipe is
+  // the record boundary; visual wrapping in Files is not a reliable delimiter.
+  const timestampPattern = /\[?20\d{2}[-/]\d{1,2}[-/]\d{1,2}[ T]\d{1,2}:\d{2}(?::\d{2})?\]?\s*[|｜]/g
+  const starts = [...normalized.matchAll(timestampPattern)].map(match => match.index!)
+  const prefix = starts.length ? normalized.slice(0, starts[0]) : normalized
+  const chunks = [
+    ...prefix.split(/---每日账本---|\n+/),
+    ...starts.flatMap((start, index) => normalized.slice(start, starts[index + 1] ?? normalized.length)
+      .split(/---每日账本---|\n(?=\s*(?:【[^】]+】\s*)?您)/))
+  ]
 
   return chunks.map(value => value.trim()).filter(Boolean).map(line => {
     const prefixed = line.match(/^\s*\[?(20\d{2}[-/]\d{1,2}[-/]\d{1,2}[ T]\d{1,2}:\d{2}(?::\d{2})?)\]?\s*[|｜]\s*([\s\S]+)$/)
     return { raw: (prefixed?.[2] ?? line).trim(), receivedAt: prefixed?.[1] }
-  }).filter(entry => /银行|尾号\d{4}|账户\d{4}|卡人民币/.test(entry.raw))
+  }).filter(entry => /银行|尾号\s*\d{4}|账户\s*\d{4}|卡人民币/.test(entry.raw))
 }
 
 function compactAccountName(value: string) {

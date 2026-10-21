@@ -2,6 +2,16 @@ import { describe, expect, it } from 'vitest'
 import { matchQuickEntryAccount, parseBankSms, parseSmsQueue, readQuickEntryPrefill } from './quickEntry'
 
 describe('快捷录入链接', () => {
+  it('按时间前缀拆分没有换行及正文换行的连续短信，保留最新记录', () => {
+    const text = '2025-03-19 20:40:34 | 您尾号1234卡人民币活期20:40取出1.00元。【浦发银行】' +
+      '2025-03-20 19:10:13 | 您尾号1234卡19:10基金000000分红\n，人民币活期转入2.00，可用余额100.00。【浦发银行】' +
+      '2025-03-20 20:45:57 | 您尾号1234卡人民币活期20:45取出3.00元。【浦发银行】\n' +
+      '2025-03-21 18:51:10 | 您尾号1234卡18:51消费4.00元消费:测试商户，可用余额100.00元。【浦发银行】'
+    const entries = parseSmsQueue(text)
+    expect(entries).toHaveLength(4)
+    expect(entries.map(entry => entry.receivedAt)).toEqual(['2025-03-19 20:40:34', '2025-03-20 19:10:13', '2025-03-20 20:45:57', '2025-03-21 18:51:10'])
+    expect(parseBankSms(entries[3]!.raw, entries[3]!.receivedAt)).toMatchObject({ amount: '4.00', type: 'expense' })
+  })
   it('读取操作按钮传入的金额和账户', () => {
     expect(readQuickEntryPrefill('#/add?amount=28.50&account=wechat&merchant=%E5%92%96%E5%95%A1')).toMatchObject({
       amount: '28.50', account: 'wechat', merchant: '咖啡'
