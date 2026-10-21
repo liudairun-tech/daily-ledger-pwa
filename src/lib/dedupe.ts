@@ -8,6 +8,13 @@ export async function markDuplicates(candidates: ImportCandidate[]) {
   const seenFingerprints = new Set<string>()
   const seenSms = new Set<string>()
   return candidates.map(candidate => {
+    const originals = (candidate.smsOriginals ?? [candidate.raw.sms]).filter(Boolean).map(s => normalizeText(s!))
+    const linked = existing.filter(item => {
+      const saved = (item.smsOriginals ?? [item.note]).map(normalizeText)
+      return originals.some(sms => saved.includes(sms))
+    })
+    if (candidate.type === 'transfer' && linked.some(item => item.type !== 'transfer')) return { ...candidate, state: 'invalid' as const, issue: '这笔互转的一侧已按收入或支出入账，请先在流水中核对并修正，避免重复统计' }
+    if (linked.length) return { ...candidate, state: 'exact-duplicate' as const, issue: '这条短信对应的交易或本人账户转账已经记账' }
     const sms = candidate.raw.sms ? normalizeText(candidate.raw.sms) : ''
     if (sms) {
       const recorded = existing.some(item => normalizeText(item.note) === sms)

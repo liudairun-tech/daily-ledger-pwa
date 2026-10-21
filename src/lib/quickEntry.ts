@@ -27,7 +27,7 @@ function cleanAmount(value?: string | null) {
 function smsDate(text: string, referenceDate?: string) {
   const full = text.match(/(20\d{2})[年/-](\d{1,2})[月/-](\d{1,2})日?\s*(\d{1,2})[:：](\d{2})/)
   const short = text.match(/(\d{1,2})月(\d{1,2})日?\s*(\d{1,2})[:：](\d{2})/)
-  const timeOnly = text.match(/(?:活期|账户|卡|于)?\s*(\d{1,2})[:：](\d{2})(?::\d{2})?\s*(?:取出|支出|消费|支付|交易|收入|存入|转入|入账)/)
+  const timeOnly = text.match(/(?:活期|账户|卡|于)?\s*(\d{1,2})[:：](\d{2})(?::\d{2})?\s*(?:手机银行)?(?:取出|支出|消费|支付|交易|收入|存入|转入|入账)/)
   const now = referenceDate ? new Date(referenceDate.replace(' ', 'T')) : new Date()
   const parts = full
     ? [Number(full[1]), Number(full[2]), Number(full[3]), Number(full[4]), Number(full[5])]
