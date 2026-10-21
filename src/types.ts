@@ -22,6 +22,7 @@ export interface Category {
 }
 
 export interface LedgerTransaction {
+  smsOriginals?: string[]
   id: string
   type: TransactionType
   amountCents: number
@@ -55,6 +56,8 @@ export interface ImportBatch {
 }
 
 export interface ImportCandidate {
+  targetAccountId?: string
+  smsOriginals?: string[]
   id: string
   batchId?: string
   source: Exclude<TransactionSource, 'manual'>
