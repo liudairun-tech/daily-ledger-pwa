@@ -9,6 +9,7 @@ import { markDuplicates } from './lib/dedupe'
 import { decryptBackup, encryptBackup, readAllData, restoreAllData, transactionsCsv, type EncryptedBackup } from './lib/backup'
 import { matchQuickEntryAccount, readQuickEntryPrefill, type QuickEntryPrefill } from './lib/quickEntry'
 import { prepareImageForOcr } from './lib/ocr'
+import { pairOwnTransfers, ownTransferTarget } from './lib/transfers'
 import { isInCustomDateRange, isInSummaryRange, summaryRangeLabels, type SummaryRange } from './lib/dateRange'
 
 const MonthBars = lazy(() => import('./components/Charts').then(module => ({ default: module.MonthBars })))
@@ -163,7 +164,8 @@ function TransactionForm({ initial, prefill, onDone }: { initial?: LedgerTransac
   useEffect(() => {
     if (form.accountId || !accounts[0]) return
     const matched = matchQuickEntryAccount(accounts, prefill)
-    setForm(value => ({ ...value, accountId: matched!.id }))
+    const target = prefill?.source === 'bank' ? ownTransferTarget(prefill.note ?? '', matched?.id, accounts) : undefined
+    setForm(value => ({ ...value, accountId: matched!.id, ...(target ? { type: 'transfer', targetAccountId: target.id } : {}) }))
   }, [accounts, form.accountId, prefill?.account])
   const availableCategories = categories.filter(c => c.kind === (form.type === 'income' ? 'income' : 'expense'))
   const patch = (value: Partial<FormState>) => setForm(previous => ({ ...previous, ...value }))
@@ -179,10 +181,14 @@ function TransactionForm({ initial, prefill, onDone }: { initial?: LedgerTransac
       merchant: form.merchant.trim() || typeLabel[form.type], note: form.note.trim(), accountId: form.accountId,
       targetAccountId: form.type === 'transfer' ? form.targetAccountId : undefined, categoryId: form.type === 'transfer' ? undefined : form.categoryId || guessCategory(form.merchant, form.note, form.type),
       source: initial?.source ?? prefill?.source ?? 'manual', externalId: initial?.externalId, importBatchId: initial?.importBatchId,
+      smsOriginals: initial?.smsOriginals ?? (prefill?.source === 'bank' && prefill.note ? [prefill.note] : undefined),
       fingerprint: makeFingerprint({ occurredAt, amountCents, type: form.type, merchant: form.merchant, accountId: form.accountId }),
       status: 'confirmed', manuallyEdited: Boolean(initial), createdAt: initial?.createdAt ?? now, updatedAt: now
     }
     if (!initial) {
+      if (prefill?.source === 'bank' && form.type === 'income' && /电子汇入|他行实时转入/.test(prefill.note ?? '')) {
+        if (!confirm('这是跨行到账短信。如果是从你自己的另一张卡转入，请取消并用待处理短信文件自动配对。只有确认来自他人的收入时，才点确定继续。')) return
+      }
       const exact = await db.transactions.where('fingerprint').equals(item.fingerprint).first()
       if (exact) return setError('这笔交易已经记录过，请勿重复保存')
       const possible = await db.transactions.filter(existing => existing.amountCents === item.amountCents && existing.type === item.type && existing.source !== item.source && Math.abs(new Date(existing.occurredAt).getTime() - new Date(item.occurredAt).getTime()) <= 10 * 60_000).first()
@@ -255,7 +261,7 @@ function ImportPage() {
       if (smsCandidates.length > 0) {
         setBusy('正在整理锁屏期间收到的银行短信…')
         try {
-          const marked = await markDuplicates(smsCandidates)
+          const marked = await markDuplicates(pairOwnTransfers(smsCandidates, accounts))
           const firstAccount = marked.find(candidate => candidate.accountId)?.accountId
           if (firstAccount) setAccountId(firstAccount)
           setFileMeta({ name: file.name, hash, source: 'bank', smsQueue: true })
@@ -320,12 +326,14 @@ function ImportPage() {
     const checked = await markDuplicates(candidates.filter(c => selected.has(c.id) && c.state !== 'exact-duplicate' && c.state !== 'invalid'))
     const chosen = checked.filter(c => c.state !== 'exact-duplicate' && c.state !== 'invalid')
     if (!chosen.length) return setMessage('没有选择可导入的记录')
+    if (chosen.some(c => c.type === 'transfer' && (!c.targetAccountId || c.targetAccountId === (c.accountId ?? accountId)))) return setMessage('请为转账选择与转出账户不同的转入账户')
     const chosenIds = new Set(chosen.map(item => item.id))
     const batchId = crypto.randomUUID(), now = new Date().toISOString()
     const transactions: LedgerTransaction[] = chosen.map(item => ({
       id: crypto.randomUUID(), type: item.type, amountCents: item.amountCents, currency: 'CNY', occurredAt: item.occurredAt,
       merchant: item.merchant, note: item.note, categoryId: item.type === 'transfer' ? undefined : item.categoryId,
-      accountId: item.accountId ?? accountId, source: item.source, externalId: item.externalId,
+      accountId: item.accountId ?? accountId, targetAccountId: item.type === 'transfer' ? item.targetAccountId : undefined,
+      smsOriginals: item.smsOriginals, source: item.source, externalId: item.externalId,
       fingerprint: makeFingerprint({ occurredAt: item.occurredAt, amountCents: item.amountCents, type: item.type, merchant: item.merchant, accountId: item.accountId ?? accountId }),
       importBatchId: batchId, status: 'confirmed', manuallyEdited: Boolean(item.manuallyEdited), createdAt: now, updatedAt: now
     }))
@@ -359,6 +367,7 @@ function ImportPage() {
         <div className="candidate-main"><div><input aria-label="商户" value={candidate.merchant} onChange={e => updateCandidate(candidate.id, { merchant: e.target.value })} /><label className="candidate-amount"><span>{candidate.type === 'expense' ? '−' : candidate.type === 'transfer' ? '' : '+'}¥</span><input aria-label="金额" inputMode="decimal" defaultValue={candidate.amountCents ? (candidate.amountCents / 100).toFixed(2) : ''} placeholder="输入金额" onBlur={e => void repairCandidate(candidate.id, { amountCents: Math.round(Math.abs(Number(e.target.value)) * 100) || 0 })} /></label></div><small>{candidate.occurredAt ? new Date(candidate.occurredAt).toLocaleString('zh-CN') : '无日期'} · <span className="candidate-direction">{typeLabel[candidate.type]}</span> · 置信度 {Math.round(candidate.confidence * 100)}%</small>
           <div className="candidate-fields"><select aria-label="交易类型" value={candidate.type} onChange={e => updateCandidate(candidate.id, { type: e.target.value as TransactionType })}>{(['expense', 'income', 'refund', 'transfer'] as TransactionType[]).map(t => <option key={t} value={t}>{typeLabel[t]}</option>)}</select><select aria-label="实际扣款账户" value={candidate.accountId ?? accountId} onChange={e => updateCandidate(candidate.id, { accountId: e.target.value })}>{accounts.map(account => <option key={account.id} value={account.id}>{account.name}</option>)}</select><select aria-label="分类" value={candidate.categoryId ?? ''} onChange={e => updateCandidate(candidate.id, { categoryId: e.target.value })}>{categories.filter(c => c.kind === (candidate.type === 'income' ? 'income' : 'expense')).map(c => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}</select></div>
           <label className="candidate-date"><span>交易时间</span><input aria-label="交易时间" type="datetime-local" value={dateTimeLocalValue(candidate.occurredAt)} onChange={e => void repairCandidate(candidate.id, { occurredAt: e.target.value ? new Date(e.target.value).toISOString() : '' })} /></label>
+          {candidate.type === 'transfer' && <label className="candidate-date"><span>转入账户</span><select aria-label="转入账户" value={candidate.targetAccountId ?? ''} onChange={e => updateCandidate(candidate.id, { targetAccountId: e.target.value })}><option value="">请选择转入账户</option>{accounts.filter(a => a.id !== (candidate.accountId ?? accountId)).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>}
           {candidate.issue && <em>{candidate.issue}</em>}
         </div>
       </article>)}</div>
