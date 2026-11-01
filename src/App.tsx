@@ -11,7 +11,7 @@ import { matchQuickEntryAccount, readQuickEntryPrefill, type QuickEntryPrefill }
 import { prepareImageForOcr } from './lib/ocr'
 import { pairOwnTransfers, ownTransferTarget } from './lib/transfers'
 import { monthlyAnalysis } from './lib/monthlyReport'
-import { canRememberMerchant, suggestCategory, suggestImportCategories } from './lib/categorySuggestions'
+import { canRememberMerchant, needsCategoryReview, suggestCategory, suggestImportCategories } from './lib/categorySuggestions'
 import { isInCustomDateRange, isInSummaryRange, summaryRangeLabels, type SummaryRange } from './lib/dateRange'
 
 const MonthBars = lazy(() => import('./components/Charts').then(module => ({ default: module.MonthBars })))
@@ -158,7 +158,19 @@ function TransactionsPage() {
 }
 
 interface FormState { type: TransactionType; amount: string; accountId: string; targetAccountId: string; categoryId: string; merchant: string; note: string; occurredAt: string }
+function CategoryReview({ items, categories, onCancel, onConfirm }: { items: { id: string; merchant: string; type: TransactionType; categoryId?: string; amountCents: number }[]; categories: Category[]; onCancel: () => void; onConfirm: (choices: Record<string, string>) => void }) {
+  const [choices, setChoices] = useState<Record<string, string>>({})
+  const valid = items.every(item => categories.some(c => c.id === choices[item.id] && !c.archived && c.kind === (item.type === 'income' ? 'income' : 'expense')))
+  return <div className="modal" role="dialog" aria-modal="true" aria-labelledby="category-review-title"><div className="modal-card category-review">
+    <h2 id="category-review-title">这些记录需要你确认分类</h2><p className="muted">商户或用途信息不足，无法可靠自动分类。请逐条选择；确实无法归类时，也可以明确选择“其他”。取消后不会入账。</p>
+    <div className="category-review-list">{items.map(item => <label className="standalone-label" key={item.id}><span>{item.merchant || '未填写商户'} · {typeLabel[item.type]} {yuan(item.amountCents)}</span><select aria-label={`${item.merchant || '未填写商户'}的分类`} value={choices[item.id] ?? ''} onChange={e => setChoices(value => ({ ...value, [item.id]: e.target.value }))}><option value="">请手工选择分类</option>{categories.filter(c => !c.archived && c.kind === (item.type === 'income' ? 'income' : 'expense')).map(c => <option key={c.id} value={c.id}>{c.emoji} {c.name}{needsCategoryReview(item.type, c.id, categories) ? '（确认保留）' : ''}</option>)}</select></label>)}</div>
+    {!categories.length && <p className="error-text">请先在设置中添加可用分类。</p>}
+    <div className="form-actions"><button type="button" className="secondary" onClick={onCancel}>返回核对</button><button type="button" className="primary" disabled={!valid} onClick={() => onConfirm(choices)}>确认分类并继续</button></div>
+  </div></div>
+}
+
 function TransactionForm({ initial, prefill, onDone }: { initial?: LedgerTransaction; prefill?: QuickEntryPrefill; onDone: () => void }) {
+  const [showCategoryReview, setShowCategoryReview] = useState(false)
   const rules = useLiveQuery(() => db.categoryRules.toArray(), [])
   const [categoryTouched, setCategoryTouched] = useState(false)
   const accounts = useLiveQuery(() => db.accounts.filter(a => !a.inactive).toArray(), []) ?? []
@@ -181,17 +193,19 @@ function TransactionForm({ initial, prefill, onDone }: { initial?: LedgerTransac
     setForm(value => value.categoryId === categoryId ? value : { ...value, categoryId })
   }, [initial, categoryTouched, rules, categories, form.merchant, form.note, form.type, prefill?.source])
   const patch = (value: Partial<FormState>) => setForm(previous => ({ ...previous, ...value }))
-  async function save(event: FormEvent) {
-    event.preventDefault()
+  async function save(event?: FormEvent, categoryOverride?: string) {
+    event?.preventDefault()
     const amountCents = Math.round(Number(form.amount) * 100)
     if (!Number.isFinite(amountCents) || amountCents <= 0) return setError('请输入有效金额')
     if (!form.accountId) return setError('请选择账户')
     if (form.type === 'transfer' && (!form.targetAccountId || form.targetAccountId === form.accountId)) return setError('请选择不同的转入账户')
+    const resolvedCategory = categoryOverride ?? (form.categoryId || suggestCategory(form.merchant, form.note, form.type, prefill?.source ?? 'manual', categories, rules ?? []))
+    if (!initial && !categoryOverride && needsCategoryReview(form.type, resolvedCategory, categories)) { setShowCategoryReview(true); return }
     const now = new Date().toISOString(), occurredAt = new Date(form.occurredAt).toISOString()
     const item: LedgerTransaction = {
       id: initial?.id ?? crypto.randomUUID(), type: form.type, amountCents, currency: 'CNY', occurredAt,
       merchant: form.merchant.trim() || typeLabel[form.type], note: form.note.trim(), accountId: form.accountId,
-      targetAccountId: form.type === 'transfer' ? form.targetAccountId : undefined, categoryId: form.type === 'transfer' ? undefined : form.categoryId || suggestCategory(form.merchant, form.note, form.type, prefill?.source ?? 'manual', categories, rules ?? []),
+      targetAccountId: form.type === 'transfer' ? form.targetAccountId : undefined, categoryId: form.type === 'transfer' ? undefined : resolvedCategory,
       source: initial?.source ?? prefill?.source ?? 'manual', externalId: initial?.externalId, importBatchId: initial?.importBatchId,
       smsOriginals: initial?.smsOriginals ?? (prefill?.source === 'bank' && prefill.note ? [prefill.note] : undefined),
       fingerprint: makeFingerprint({ occurredAt, amountCents, type: form.type, merchant: form.merchant, accountId: form.accountId }),
@@ -228,10 +242,12 @@ function TransactionForm({ initial, prefill, onDone }: { initial?: LedgerTransac
       {error && <p className="error-text">{error}</p>}
       <div className="form-actions">{initial && <button type="button" className="secondary" onClick={onDone}>取消</button>}<button className="primary" type="submit">{initial ? '保存修改' : '确认记账'}</button></div>
     </form>
+    {showCategoryReview && <CategoryReview items={[{ id: 'single', merchant: form.merchant, type: form.type, amountCents: Math.round(Number(form.amount) * 100), categoryId: form.categoryId }]} categories={categories} onCancel={() => setShowCategoryReview(false)} onConfirm={choices => { setShowCategoryReview(false); setCategoryTouched(true); patch({ categoryId: choices.single }); void save(undefined, choices.single) }} />}
   </div>
 }
 
 function ImportPage() {
+  const [reviewItems, setReviewItems] = useState<ImportCandidate[]>([])
   const accounts = useLiveQuery(() => db.accounts.filter(a => !a.inactive).toArray(), []) ?? []
   const categories = useLiveQuery(() => db.categories.filter(c => !c.archived).toArray(), []) ?? []
   const inputRef = useRef<HTMLInputElement>(null)
@@ -340,12 +356,15 @@ function ImportPage() {
     })
   }
 
-  async function confirmImport() {
+  async function confirmImport(categoryOverrides?: Record<string, string>) {
     if (!fileMeta) return
-    const checked = await markDuplicates(candidates.filter(c => selected.has(c.id) && c.state !== 'exact-duplicate' && c.state !== 'invalid'))
+    const reviewedCandidates = candidates.map(c => categoryOverrides?.[c.id] ? { ...c, categoryId: categoryOverrides[c.id], manuallyEdited: true } : c)
+    const checked = await markDuplicates(reviewedCandidates.filter(c => selected.has(c.id) && c.state !== 'exact-duplicate' && c.state !== 'invalid'))
     const chosen = checked.filter(c => c.state !== 'exact-duplicate' && c.state !== 'invalid')
     if (!chosen.length) return setMessage('没有选择可导入的记录')
     if (chosen.some(c => c.type === 'transfer' && (!c.targetAccountId || c.targetAccountId === (c.accountId ?? accountId)))) return setMessage('请为转账选择与转出账户不同的转入账户')
+    const unresolved = chosen.filter(c => !categoryOverrides?.[c.id] && needsCategoryReview(c.type, c.categoryId, categories))
+    if (unresolved.length) { setReviewItems(unresolved); return }
     const chosenIds = new Set(chosen.map(item => item.id))
     const batchId = crypto.randomUUID(), now = new Date().toISOString()
     const transactions: LedgerTransaction[] = chosen.map(item => ({
@@ -358,7 +377,7 @@ function ImportPage() {
     }))
     await db.transaction('rw', db.importBatches, db.importCandidates, db.transactions, async () => {
       await db.importBatches.add({ id: batchId, source: fileMeta.source, fileName: fileMeta.name, fileHash: fileMeta.hash, importedAt: now, totalCount: candidates.length, importedCount: chosen.length, duplicateCount: candidates.filter(c => c.state.includes('duplicate')).length, errorCount: candidates.filter(c => c.state === 'invalid').length })
-      await db.importCandidates.bulkPut(candidates.map(c => ({ ...c, batchId, state: chosenIds.has(c.id) ? 'imported' : c.state === 'ready' ? 'skipped' : c.state })))
+      await db.importCandidates.bulkPut(reviewedCandidates.map(c => ({ ...c, batchId, state: chosenIds.has(c.id) ? 'imported' : c.state === 'ready' ? 'skipped' : c.state })))
       await db.transactions.bulkAdd(transactions)
     })
     await noteDataChange(); setCandidates([]); setParsed(undefined); setFileMeta(undefined); setMessage(`已安全导入 ${chosen.length} 笔，重复和异常项未入账。`)
@@ -367,6 +386,7 @@ function ImportPage() {
   const headers = parsed?.headers ?? []
   return <div className="page">
     <PageHeader eyebrow="本机处理，不上传账单" title="智能导入" />
+    {reviewItems.length > 0 && <CategoryReview items={reviewItems} categories={categories} onCancel={() => setReviewItems([])} onConfirm={choices => { setReviewItems([]); void confirmImport(choices) }} />}
     <section className="import-hero">
       <div className="scan-orbit">⌁</div><h2>账单、截图或锁屏短信</h2><p>支持锁屏短信队列、支付宝/微信账单、银行卡 CSV，以及照片和截图 OCR。</p>
       <button className="primary" onClick={() => inputRef.current?.click()}>选择待处理文件或照片</button>
