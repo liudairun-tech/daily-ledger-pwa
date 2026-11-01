@@ -1,9 +1,20 @@
 import { describe, expect, it } from 'vitest'
 import { guessCategory } from './importers'
-import { canRememberMerchant, suggestCategory } from './categorySuggestions'
+import { canRememberMerchant, needsCategoryReview, suggestCategory } from './categorySuggestions'
 import type { Category } from '../types'
 
 describe('自动分类', () => {
+  it('用途不明和失效分类需要确认，明确分类及转账直接通过', () => {
+    const categories: Category[] = [
+      { id: 'cat-other', name: '其他', emoji: '', kind: 'expense', color: '', archived: false },
+      { id: 'food', name: '餐饮', emoji: '', kind: 'expense', color: '', archived: false }
+    ]
+    expect(needsCategoryReview('expense', 'cat-other', categories)).toBe(true)
+    expect(needsCategoryReview('expense', undefined, categories)).toBe(true)
+    expect(needsCategoryReview('expense', 'food', categories)).toBe(false)
+    expect(needsCategoryReview('income', 'food', categories)).toBe(true)
+    expect(needsCategoryReview('transfer', undefined, categories)).toBe(false)
+  })
   it('明确用途自动分类，支付通道和泛美团名称不猜餐饮', () => {
     expect(guessCategory('ETC通行费', '', 'expense')).toBe('cat-transport')
     expect(guessCategory('停车费', '', 'expense')).toBe('cat-transport')

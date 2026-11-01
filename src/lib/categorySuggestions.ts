@@ -3,6 +3,12 @@ import type { Category, CategoryRule, ImportCandidate, TransactionSource, Transa
 import { normalizeText } from './fingerprint'
 import { guessCategory } from './importers'
 
+export function needsCategoryReview(type: TransactionType, categoryId: string | undefined, categories: Category[]) {
+  if (type === 'transfer') return false
+  const category = categories.find(c => c.id === categoryId && !c.archived && c.kind === (type === 'income' ? 'income' : 'expense'))
+  return !category || ['cat-other', 'cat-income'].includes(category.id) || /^(其他|其它|其他收入|其它收入)$/.test(category.name.trim())
+}
+
 export function suggestCategory(merchant: string, note: string, type: TransactionType, source: TransactionSource, categories: Category[], rules: CategoryRule[]) {
   if (type === 'transfer') return undefined
   const available = categories.filter(c => !c.archived && c.kind === (type === 'income' ? 'income' : 'expense'))
