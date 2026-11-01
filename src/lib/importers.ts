@@ -158,17 +158,19 @@ export function rowsToCandidates(parsed: ParsedFile, accountId: string, map?: Ge
 
 const categoryKeywords: Array<[string, string]> = [
   ['餐饮|早餐|午餐|晚餐|饭店|餐厅|咖啡|奶茶|饿了么|美团外卖|麦当劳|肯德基', 'cat-food'],
-  ['地铁|公交|滴滴|铁路|航空|加油|停车|ETC|通行费', 'cat-transport'],
+  ['地铁|公交|滴滴|铁路|航空|加油|停车|etc|通行费|高速|打车', 'cat-transport'],
+  ['淘宝|天猫|京东|拼多多|唯品会|超市|便利店|百货|服装', 'cat-shopping'],
   ['医院|药房|医疗|诊所', 'cat-health'],
   ['电影|游戏|娱乐|视频|音乐', 'cat-fun'],
-  ['房租|物业|水费|电费|燃气', 'cat-home'],
+  ['房租|物业|水费|电费|燃气|供暖|宽带', 'cat-home'],
   ['工资|薪资|奖金', 'cat-salary']
 ]
 
 export function guessCategory(merchant: string, note: string, type: TransactionType) {
-  if (type === 'income') return 'cat-income'
   const haystack = normalizeText(`${merchant}${note}`)
-  return categoryKeywords.find(([pattern]) => new RegExp(pattern).test(haystack))?.[1] ?? 'cat-other'
+  if (type === 'transfer') return undefined
+  if (type === 'income') return /工资|薪资|薪酬|奖金/.test(haystack) ? 'cat-salary' : 'cat-income'
+  return categoryKeywords.filter(([, id]) => id !== 'cat-salary').find(([pattern]) => new RegExp(pattern, 'i').test(haystack))?.[1] ?? 'cat-other'
 }
 
 function ocrField(text: string, labels: string[]) {
