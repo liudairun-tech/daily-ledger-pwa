@@ -10,11 +10,12 @@ import { decryptBackup, encryptBackup, readAllData, restoreAllData, transactions
 import { matchQuickEntryAccount, readQuickEntryPrefill, type QuickEntryPrefill } from './lib/quickEntry'
 import { prepareImageForOcr } from './lib/ocr'
 import { pairOwnTransfers, ownTransferTarget } from './lib/transfers'
-import { monthlyReport } from './lib/monthlyReport'
+import { monthlyAnalysis } from './lib/monthlyReport'
 import { isInCustomDateRange, isInSummaryRange, summaryRangeLabels, type SummaryRange } from './lib/dateRange'
 
 const MonthBars = lazy(() => import('./components/Charts').then(module => ({ default: module.MonthBars })))
 const SpendingPie = lazy(() => import('./components/Charts').then(module => ({ default: module.SpendingPie })))
+const ReportCharts = lazy(() => import('./components/Charts').then(module => ({ default: module.ReportCharts })))
 
 type Route = 'home' | 'transactions' | 'add' | 'import' | 'settings' | 'report'
 const navItems: Array<{ route: Route; icon: string; label: string }> = [
@@ -387,11 +388,19 @@ function MonthlyReportPage() {
   const currentMonth = localDateKey(now).slice(0, 7)
   const lastMonth = localDateKey(new Date(now.getFullYear(), now.getMonth() - 1, 1)).slice(0, 7)
   const [month, setMonth] = useState(lastMonth)
-  const report = monthlyReport(transactions ?? [], categories ?? [], month, now)
+  const report = monthlyAnalysis(transactions ?? [], categories ?? [], month, now)
   return <div className="page">
     <PageHeader eyebrow="本机自动分析，账目修改后实时更新" title="月度资金报告" action={<button className="secondary" onClick={() => go('home')}>返回</button>} />
     <label className="standalone-label">选择月份<input type="month" max={currentMonth} value={month} onChange={e => { if (/^\d{4}-\d{2}$/.test(e.target.value)) setMonth(e.target.value) }} /></label>
-    {transactions && categories ? <><section className="section-card"><div className="monthly-report">{report.text}</div></section><button className="primary" onClick={() => downloadBlob(new Blob([report.text], { type: 'text/plain;charset=utf-8' }), `每日账本-${month}-月报.txt`)}>导出文字报告</button></> : <p>正在读取本机账目…</p>}
+    {transactions && categories ? <>
+      <p className="muted">{report.partial ? '本月进度 · 截至今天' : '完整月份 · 基于已记录账目'} · {month}</p>
+      <div className="report-metrics">{[['收入', report.summary.income], ['净支出', report.summary.expense], ['结余', report.summary.balance], ['平均每笔消费', report.summary.average]].map(([label, amount]) => <div key={String(label)}><span>{label}</span><strong>{yuan(Number(amount))}</strong></div>)}</div>
+      <section className="section-card report-insights"><h2>本月关键发现</h2><p className="muted">{report.scope}</p>{report.insights.map(line => <p key={line}>{line}</p>)}</section>
+      <Suspense fallback={<div className="empty-chart">正在准备分析图表…</div>}><ReportCharts report={report} /></Suspense>
+      <section className="section-card"><h2>大额消费复核</h2>{report.largest.length ? <div className="report-ranking">{report.largest.map(t => <div key={t.id}><span>{t.merchant || '未填写商户'}<small>{localDateKey(t.occurredAt)}</small></span><strong>{yuan(t.amountCents)}</strong></div>)}</div> : <p className="muted">本月没有消费记录。</p>}{report.observations.map(line => <p className="muted" key={line}>{line}</p>)}</section>
+      <section className="section-card"><h2>统计口径与待核对项</h2>{report.quality.map(line => <p className="muted" key={line}>{line}</p>)}</section>
+      <button className="primary" onClick={() => downloadBlob(new Blob([report.text], { type: 'text/plain;charset=utf-8' }), `每日账本-${month}-月报.txt`)}>导出文字报告</button>
+    </> : <p>正在读取本机账目…</p>}
     <p className="muted">打开报告时自动生成，可查看历史月份。手机锁屏或应用关闭时不会在后台运行，也不会主动推送。</p>
   </div>
 }
