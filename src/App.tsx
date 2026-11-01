@@ -4,13 +4,14 @@ import { db, ensureSeedData, noteDataChange } from './db'
 import type { Account, AccountType, Category, GenericColumnMap, ImportCandidate, LedgerTransaction, TransactionType } from './types'
 import { dateTimeLocalValue, downloadBlob, localDateKey, transactionImpact, typeLabel, yuan } from './lib/format'
 import { makeFingerprint } from './lib/fingerprint'
-import { candidatesFromOcr, candidatesFromSmsQueue, extractTextFromFile, guessCategory, hashBuffer, parseStatement, rowsToCandidates, type ParsedFile } from './lib/importers'
+import { candidatesFromOcr, candidatesFromSmsQueue, extractTextFromFile, hashBuffer, parseStatement, rowsToCandidates, type ParsedFile } from './lib/importers'
 import { markDuplicates } from './lib/dedupe'
 import { decryptBackup, encryptBackup, readAllData, restoreAllData, transactionsCsv, type EncryptedBackup } from './lib/backup'
 import { matchQuickEntryAccount, readQuickEntryPrefill, type QuickEntryPrefill } from './lib/quickEntry'
 import { prepareImageForOcr } from './lib/ocr'
 import { pairOwnTransfers, ownTransferTarget } from './lib/transfers'
 import { monthlyAnalysis } from './lib/monthlyReport'
+import { canRememberMerchant, suggestCategory, suggestImportCategories } from './lib/categorySuggestions'
 import { isInCustomDateRange, isInSummaryRange, summaryRangeLabels, type SummaryRange } from './lib/dateRange'
 
 const MonthBars = lazy(() => import('./components/Charts').then(module => ({ default: module.MonthBars })))
@@ -158,6 +159,8 @@ function TransactionsPage() {
 
 interface FormState { type: TransactionType; amount: string; accountId: string; targetAccountId: string; categoryId: string; merchant: string; note: string; occurredAt: string }
 function TransactionForm({ initial, prefill, onDone }: { initial?: LedgerTransaction; prefill?: QuickEntryPrefill; onDone: () => void }) {
+  const rules = useLiveQuery(() => db.categoryRules.toArray(), [])
+  const [categoryTouched, setCategoryTouched] = useState(false)
   const accounts = useLiveQuery(() => db.accounts.filter(a => !a.inactive).toArray(), []) ?? []
   const categories = useLiveQuery(() => db.categories.filter(c => !c.archived).toArray(), []) ?? []
   const [form, setForm] = useState<FormState>({
@@ -172,6 +175,11 @@ function TransactionForm({ initial, prefill, onDone }: { initial?: LedgerTransac
     setForm(value => ({ ...value, accountId: matched!.id, ...(target ? { type: 'transfer', targetAccountId: target.id } : {}) }))
   }, [accounts, form.accountId, prefill?.account])
   const availableCategories = categories.filter(c => c.kind === (form.type === 'income' ? 'income' : 'expense'))
+  useEffect(() => {
+    if (initial || categoryTouched || !rules || !categories.length) return
+    const categoryId = suggestCategory(form.merchant, form.note, form.type, prefill?.source ?? 'manual', categories, rules) ?? ''
+    setForm(value => value.categoryId === categoryId ? value : { ...value, categoryId })
+  }, [initial, categoryTouched, rules, categories, form.merchant, form.note, form.type, prefill?.source])
   const patch = (value: Partial<FormState>) => setForm(previous => ({ ...previous, ...value }))
   async function save(event: FormEvent) {
     event.preventDefault()
@@ -183,7 +191,7 @@ function TransactionForm({ initial, prefill, onDone }: { initial?: LedgerTransac
     const item: LedgerTransaction = {
       id: initial?.id ?? crypto.randomUUID(), type: form.type, amountCents, currency: 'CNY', occurredAt,
       merchant: form.merchant.trim() || typeLabel[form.type], note: form.note.trim(), accountId: form.accountId,
-      targetAccountId: form.type === 'transfer' ? form.targetAccountId : undefined, categoryId: form.type === 'transfer' ? undefined : form.categoryId || guessCategory(form.merchant, form.note, form.type),
+      targetAccountId: form.type === 'transfer' ? form.targetAccountId : undefined, categoryId: form.type === 'transfer' ? undefined : form.categoryId || suggestCategory(form.merchant, form.note, form.type, prefill?.source ?? 'manual', categories, rules ?? []),
       source: initial?.source ?? prefill?.source ?? 'manual', externalId: initial?.externalId, importBatchId: initial?.importBatchId,
       smsOriginals: initial?.smsOriginals ?? (prefill?.source === 'bank' && prefill.note ? [prefill.note] : undefined),
       fingerprint: makeFingerprint({ occurredAt, amountCents, type: form.type, merchant: form.merchant, accountId: form.accountId }),
@@ -207,12 +215,12 @@ function TransactionForm({ initial, prefill, onDone }: { initial?: LedgerTransac
   return <div className="page form-page">
     <PageHeader eyebrow={initial ? '修改已确认流水' : prefill?.amount || prefill?.note ? '已自动填写，请核对后保存' : '金额优先，快速完成'} title={initial ? '编辑流水' : '记一笔'} action={initial ? <button className="text-danger" onClick={remove}>删除</button> : undefined} />
     <form onSubmit={save}>
-      <div className="segmented">{(['expense', 'income', 'refund', 'transfer'] as TransactionType[]).map(type => <button type="button" key={type} className={form.type === type ? 'selected' : ''} onClick={() => patch({ type, categoryId: '' })}>{typeLabel[type]}</button>)}</div>
+      <div className="segmented">{(['expense', 'income', 'refund', 'transfer'] as TransactionType[]).map(type => <button type="button" key={type} className={form.type === type ? 'selected' : ''} onClick={() => { setCategoryTouched(false); patch({ type, categoryId: '' }) }}>{typeLabel[type]}</button>)}</div>
       <label className="amount-field"><span>¥</span><input inputMode="decimal" autoFocus={!initial} value={form.amount} onChange={e => patch({ amount: e.target.value.replace(/[^0-9.]/g, '') })} placeholder="0.00" /></label>
       <div className="form-card">
         <label><span>账户</span><select value={form.accountId} onChange={e => patch({ accountId: e.target.value })}>{accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
         {form.type === 'transfer' && <label><span>转入</span><select value={form.targetAccountId} onChange={e => patch({ targetAccountId: e.target.value })}><option value="">请选择</option>{accounts.filter(a => a.id !== form.accountId).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>}
-        {form.type !== 'transfer' && <label><span>分类</span><select value={form.categoryId} onChange={e => patch({ categoryId: e.target.value })}><option value="">自动判断</option>{availableCategories.map(c => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}</select></label>}
+        {form.type !== 'transfer' && <label><span>分类</span><select value={form.categoryId} onChange={e => { setCategoryTouched(Boolean(e.target.value)); patch({ categoryId: e.target.value }) }}><option value="">自动判断</option>{availableCategories.map(c => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}</select></label>}
         <label><span>商户</span><input value={form.merchant} onChange={e => patch({ merchant: e.target.value })} placeholder="例如：早餐店" /></label>
         <label><span>时间</span><input type="datetime-local" value={form.occurredAt} onChange={e => patch({ occurredAt: e.target.value })} /></label>
         <label><span>备注</span><input value={form.note} onChange={e => patch({ note: e.target.value })} placeholder="可选" /></label>
@@ -254,7 +262,7 @@ function ImportPage() {
         const result = await worker.recognize(preparedImage)
         await worker.terminate()
         const sourceAccount = accounts.find(a => a.id === accountId)?.id ?? accounts[0]?.id ?? ''
-        const marked = await markDuplicates(candidatesFromOcr(result.data.text, sourceAccount, accounts).map(c => ({ ...c, categoryId: guessCategory(c.merchant, c.note, c.type) })))
+        const marked = await markDuplicates(await suggestImportCategories(candidatesFromOcr(result.data.text, sourceAccount, accounts)))
         setFileMeta({ name: file.name, hash, source: 'ocr' }); setCandidates(marked); setSelected(new Set(marked.filter(c => c.state === 'ready').map(c => c.id)))
       } catch (error) { setMessage(error instanceof Error ? error.message : '图片识别失败') } finally { setBusy('') }
       return
@@ -265,7 +273,7 @@ function ImportPage() {
       if (smsCandidates.length > 0) {
         setBusy('正在整理锁屏期间收到的银行短信…')
         try {
-          const marked = await markDuplicates(pairOwnTransfers(smsCandidates, accounts))
+          const marked = await markDuplicates(await suggestImportCategories(pairOwnTransfers(smsCandidates, accounts)))
           const firstAccount = marked.find(candidate => candidate.accountId)?.accountId
           if (firstAccount) setAccountId(firstAccount)
           setFileMeta({ name: file.name, hash, source: 'bank', smsQueue: true })
@@ -293,13 +301,20 @@ function ImportPage() {
 
   async function prepareCandidates(sourceParsed = parsed, sourceAccount = accountId, customMap?: GenericColumnMap) {
     if (!sourceParsed) return
-    const list = rowsToCandidates(sourceParsed, sourceAccount, customMap).map(c => ({ ...c, categoryId: guessCategory(c.merchant, c.note, c.type) }))
+    const list = await suggestImportCategories(rowsToCandidates(sourceParsed, sourceAccount, customMap))
     const marked = await markDuplicates(list)
     setCandidates(marked); setSelected(new Set(marked.filter(c => c.state === 'ready').map(c => c.id))); setMessage('')
   }
 
   function updateCandidate(id: string, patch: Partial<ImportCandidate>) {
     setCandidates(items => items.map(item => item.id === id ? { ...item, ...patch, manuallyEdited: true } : item))
+  }
+
+  async function rememberCategory(candidate: ImportCandidate) {
+    if (!candidate.categoryId || !canRememberMerchant(candidate.merchant)) return
+    await db.categoryRules.add({ id: crypto.randomUUID(), source: candidate.source, keyword: candidate.merchant.trim(), categoryId: candidate.categoryId, createdAt: new Date().toISOString() })
+    await noteDataChange()
+    setMessage(`已记住“${candidate.merchant}”的分类，下次导入会自动使用。当前其他候选保留你的选择。`)
   }
 
   async function repairCandidate(id: string, patch: Partial<ImportCandidate>) {
@@ -373,6 +388,7 @@ function ImportPage() {
           <label className="candidate-date"><span>交易时间</span><input aria-label="交易时间" type="datetime-local" value={dateTimeLocalValue(candidate.occurredAt)} onChange={e => void repairCandidate(candidate.id, { occurredAt: e.target.value ? new Date(e.target.value).toISOString() : '' })} /></label>
           {candidate.type === 'transfer' && <label className="candidate-date"><span>转入账户</span><select aria-label="转入账户" value={candidate.targetAccountId ?? ''} onChange={e => updateCandidate(candidate.id, { targetAccountId: e.target.value })}><option value="">请选择转入账户</option>{accounts.filter(a => a.id !== (candidate.accountId ?? accountId)).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>}
           {candidate.issue && <em>{candidate.issue}</em>}
+          {candidate.type !== 'transfer' && candidate.categoryId && canRememberMerchant(candidate.merchant) && <button type="button" className="link-button" onClick={() => void rememberCategory(candidate)}>记住此商户分类</button>}
         </div>
       </article>)}</div>
       <div className="sticky-confirm"><button className="primary" onClick={() => void confirmImport()}>确认导入 {selected.size} 笔</button></div>
