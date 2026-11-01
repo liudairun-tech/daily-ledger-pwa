@@ -3,6 +3,7 @@
   color: #152235; background: #f4f7fb; font-synthesis: none; text-rendering: optimizeLegibility;
   --ink: #152235; --muted: #718096; --card: rgba(255,255,255,.92); --line: #e7edf3; --green: #0da985; --green-bright: #16c79a; --orange: #ff7a59; --nav: rgba(248,250,253,.88);
 }
+.monthly-report { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.85; font-size: 14px; color: var(--ink); }
 * { box-sizing: border-box; }
 html { background: #0b1220; }
 body { margin: 0; min-width: 320px; min-height: 100vh; background: radial-gradient(circle at 100% 0, #dff9f1 0, transparent 34%), #f4f7fb; }

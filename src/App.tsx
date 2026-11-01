@@ -10,12 +10,13 @@ import { decryptBackup, encryptBackup, readAllData, restoreAllData, transactions
 import { matchQuickEntryAccount, readQuickEntryPrefill, type QuickEntryPrefill } from './lib/quickEntry'
 import { prepareImageForOcr } from './lib/ocr'
 import { pairOwnTransfers, ownTransferTarget } from './lib/transfers'
+import { monthlyReport } from './lib/monthlyReport'
 import { isInCustomDateRange, isInSummaryRange, summaryRangeLabels, type SummaryRange } from './lib/dateRange'
 
 const MonthBars = lazy(() => import('./components/Charts').then(module => ({ default: module.MonthBars })))
 const SpendingPie = lazy(() => import('./components/Charts').then(module => ({ default: module.SpendingPie })))
 
-type Route = 'home' | 'transactions' | 'add' | 'import' | 'settings'
+type Route = 'home' | 'transactions' | 'add' | 'import' | 'settings' | 'report'
 const navItems: Array<{ route: Route; icon: string; label: string }> = [
   { route: 'home', icon: '⌂', label: '首页' }, { route: 'transactions', icon: '≡', label: '流水' },
   { route: 'add', icon: '+', label: '记账' }, { route: 'import', icon: '⇩', label: '导入' }, { route: 'settings', icon: '⚙', label: '设置' }
@@ -23,7 +24,7 @@ const navItems: Array<{ route: Route; icon: string; label: string }> = [
 
 function currentRoute(): Route {
   const value = location.hash.replace(/^#\/?/, '').split('?')[0]
-  return navItems.some(item => item.route === value) ? value as Route : 'home'
+  return value === 'report' || navItems.some(item => item.route === value) ? value as Route : 'home'
 }
 
 function go(route: Route) { location.hash = `/${route}` }
@@ -47,6 +48,7 @@ export default function App() {
       {route === 'add' && <TransactionForm key={routeKey} prefill={readQuickEntryPrefill()} onDone={() => go('transactions')} />}
       {route === 'import' && <ImportPage />}
       {route === 'settings' && <SettingsPage />}
+      {route === 'report' && <MonthlyReportPage />}
     </main>
     <nav className="bottom-nav" aria-label="主导航">
       {navItems.map(item => <button key={item.route} className={route === item.route ? 'active' : ''} onClick={() => go(item.route)}>
@@ -86,6 +88,7 @@ function HomePage() {
   return <div className="page home-page">
     <PageHeader eyebrow={new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }).format(new Date())} title="今天，记清每一笔" action={<button className="avatar" onClick={() => go('settings')}>账</button>} />
     {needsBackup && transactions.length > 0 && <button className="notice" onClick={() => go('settings')}>你的账本该备份了 <b>去备份 →</b></button>}
+    <button className="notice" onClick={() => go('report')}>查看月度资金分析 <b>月报 →</b></button>
     <section className="balance-card">
       <div className="balance-head"><span>{summaryRangeLabels[balanceRange].full}结余</span><RangeTabs value={balanceRange} onChange={setBalanceRange} label="结余统计周期" /></div>
       <strong>{yuan(income - expense)}</strong>
@@ -374,6 +377,22 @@ function ImportPage() {
       <div className="sticky-confirm"><button className="primary" onClick={() => void confirmImport()}>确认导入 {selected.size} 笔</button></div>
     </section>}
     {!candidates.length && !busy && <><section className="section-card queue-card"><div className="section-title"><h2>锁屏短信待处理</h2><span>新增</span></div><p>iPhone 锁屏时，快捷指令把银行短信追加到 <b>每日账本待处理.txt</b>。解锁后在上方选择这个文件，即可批量核对；旧短信会按交易指纹自动拦截，不会重复入账。</p></section><section className="section-card tips"><h2>导入原则</h2><ol><li>相同文件和相同交易不会重复导入</li><li>自动匹配银行名称及卡号尾号对应账户</li><li>银行卡与微信/支付宝同额近时交易标黄确认</li><li>还款、充值和转账不计收支</li></ol></section></>}
+  </div>
+}
+
+function MonthlyReportPage() {
+  const transactions = useLiveQuery(() => db.transactions.toArray(), [])
+  const categories = useLiveQuery(() => db.categories.toArray(), [])
+  const now = new Date()
+  const currentMonth = localDateKey(now).slice(0, 7)
+  const lastMonth = localDateKey(new Date(now.getFullYear(), now.getMonth() - 1, 1)).slice(0, 7)
+  const [month, setMonth] = useState(lastMonth)
+  const report = monthlyReport(transactions ?? [], categories ?? [], month, now)
+  return <div className="page">
+    <PageHeader eyebrow="本机自动分析，账目修改后实时更新" title="月度资金报告" action={<button className="secondary" onClick={() => go('home')}>返回</button>} />
+    <label className="standalone-label">选择月份<input type="month" max={currentMonth} value={month} onChange={e => { if (/^\d{4}-\d{2}$/.test(e.target.value)) setMonth(e.target.value) }} /></label>
+    {transactions && categories ? <><section className="section-card"><div className="monthly-report">{report.text}</div></section><button className="primary" onClick={() => downloadBlob(new Blob([report.text], { type: 'text/plain;charset=utf-8' }), `每日账本-${month}-月报.txt`)}>导出文字报告</button></> : <p>正在读取本机账目…</p>}
+    <p className="muted">打开报告时自动生成，可查看历史月份。手机锁屏或应用关闭时不会在后台运行，也不会主动推送。</p>
   </div>
 }
 
