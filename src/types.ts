@@ -3,6 +3,8 @@ export type TransactionSource = 'manual' | 'alipay' | 'wechat' | 'bank' | 'ocr'
 export type AccountType = 'alipay' | 'wechat' | 'bank' | 'cash' | 'other'
 
 export interface Account {
+  ownCard?: boolean
+  ownerName?: string
   id: string
   name: string
   type: AccountType
@@ -56,6 +58,9 @@ export interface ImportBatch {
 }
 
 export interface ImportCandidate {
+  inboxIds?: string[]
+  mergeIds?: string[]
+  waitingForPair?: boolean
   targetAccountId?: string
   smsOriginals?: string[]
   id: string
@@ -75,6 +80,26 @@ export interface ImportCandidate {
   state: 'ready' | 'possible-duplicate' | 'exact-duplicate' | 'invalid' | 'imported' | 'skipped'
   issue?: string
   manuallyEdited?: boolean
+}
+
+export interface SmsInboxRecord {
+  id: string
+  raw: string
+  receivedAt?: string
+  firstSeen: string
+  lastSeen: string
+  fileName: string
+  candidate: ImportCandidate
+  reviewedCategory?: boolean
+  standalone?: boolean
+}
+
+export interface TransferMergeAudit {
+  id: string
+  before: LedgerTransaction[]
+  after: LedgerTransaction
+  createdAt: string
+  undoneAt?: string
 }
 
 export interface CategoryRule {

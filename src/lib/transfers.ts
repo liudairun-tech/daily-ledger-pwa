@@ -4,6 +4,7 @@ import { makeFingerprint, normalizeText } from './fingerprint'
 
 /** Only explicit outbound remittance to a known own card is eligible. */
 export function ownTransferTarget(sms: string, sourceId: string | undefined, accounts: Account[]) {
+  if (!accounts.some(a => a.id === sourceId && a.type === 'bank' && !a.inactive)) return undefined
   const tail = sms.match(/\[互联汇出\][^，,。\n]*?(\d{4})\s*(?=[，,。]|$)/)?.[1]
   if (!tail) return undefined
   const targets = accounts.filter(a => a.type === 'bank' && !a.inactive && a.id !== sourceId && new RegExp(`(?:^|\\D)${tail}(?:\\D|$)`).test(a.name))
@@ -14,12 +15,12 @@ export function pairOwnTransfers(candidates: ImportCandidate[], accounts: Accoun
   // Repeated lines in a cumulative file must not create ambiguous pairs.
   const seen = new Set<string>()
   const unique = candidates.filter(c => {
-    const key = normalizeText(c.raw.sms ?? c.id)
+    const key = `${normalizeText(c.raw.sms ?? c.id)}|${localDateKey(c.occurredAt)}`
     if (seen.has(key)) return false
     seen.add(key); return true
   })
   const outgoing = unique.flatMap(c => {
-    const target = c.type === 'expense' ? ownTransferTarget(c.raw.sms ?? '', c.accountId, accounts) : undefined
+    const target = c.type === 'expense' || c.type === 'transfer' ? ownTransferTarget(c.raw.sms ?? '', c.accountId, accounts) : undefined
     return target ? [{ candidate: c, target }] : []
   })
   const matches = (out: ImportCandidate, target: Account, incoming: ImportCandidate) => {
@@ -41,6 +42,7 @@ export function pairOwnTransfers(candidates: ImportCandidate[], accounts: Accoun
     const merchant = `${source?.name ?? '银行卡'} → ${target.name}`
     replacements.set(out.id, {
       ...out, type: 'transfer', targetAccountId: target.id, categoryId: undefined, merchant,
+      inboxIds: [...(out.inboxIds ?? []), ...(other?.inboxIds ?? [])],
       smsOriginals: other ? [out.raw.sms!, other.raw.sms!] : [out.raw.sms!],
       note: other ? `${out.raw.sms}\n${other.raw.sms}` : out.note,
       fingerprint: makeFingerprint({ ...out, type: 'transfer', merchant }),

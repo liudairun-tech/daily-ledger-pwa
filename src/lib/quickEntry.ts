@@ -28,7 +28,7 @@ function smsDate(text: string, referenceDate?: string) {
   const full = text.match(/(20\d{2})[年/-](\d{1,2})[月/-](\d{1,2})日?\s*(\d{1,2})[:：](\d{2})/)
   const short = text.match(/(\d{1,2})月(\d{1,2})日?\s*(\d{1,2})[:：](\d{2})/)
   const timeOnly = text.match(/(?:活期|账户|卡|于)?\s*(\d{1,2})[:：](\d{2})(?::\d{2})?\s*(?:手机银行)?(?:取出|支出|消费|支付|交易|收入|存入|转入|入账)/)
-  const now = referenceDate ? new Date(referenceDate.replace(' ', 'T')) : new Date()
+  const now = referenceDate ? new Date(referenceDate.replace(/\//g, '-').replace(' ', 'T')) : new Date()
   const parts = full
     ? [Number(full[1]), Number(full[2]), Number(full[3]), Number(full[4]), Number(full[5])]
     : short
@@ -76,7 +76,7 @@ export function parseBankSms(text: string, referenceDate?: string): QuickEntryPr
  * The recommended format is one SMS per line. We also accept timestamp-prefixed
  * lines and a visible separator so an older shortcut can be upgraded safely.
  */
-export function parseSmsQueue(text: string): QueuedSmsEntry[] {
+export function parseSmsQueue(text: string, includeUnknown = false): QueuedSmsEntry[] {
   const normalized = text.replace(/^\uFEFF/, '').replace(/\r\n?|[\u2028\u2029]/g, '\n')
   // Shortcuts can append entries without a newline. The timestamp + pipe is
   // the record boundary; visual wrapping in Files is not a reliable delimiter.
@@ -92,7 +92,7 @@ export function parseSmsQueue(text: string): QueuedSmsEntry[] {
   return chunks.map(value => value.trim()).filter(Boolean).map(line => {
     const prefixed = line.match(/^\s*\[?(20\d{2}[-/]\d{1,2}[-/]\d{1,2}[ T]\d{1,2}:\d{2}(?::\d{2})?)\]?\s*[|｜]\s*([\s\S]+)$/)
     return { raw: (prefixed?.[2] ?? line).trim(), receivedAt: prefixed?.[1] }
-  }).filter(entry => /银行|尾号\s*\d{4}|账户\s*\d{4}|卡人民币/.test(entry.raw))
+  }).filter(entry => includeUnknown || /银行|尾号\s*\d{4}|账户\s*\d{4}|卡人民币/.test(entry.raw))
 }
 
 function compactAccountName(value: string) {

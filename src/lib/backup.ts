@@ -1,6 +1,6 @@
 import Papa from 'papaparse'
 import { db } from '../db'
-import type { Account, AppSetting, Category, CategoryRule, ImportBatch, ImportCandidate, LedgerTransaction } from '../types'
+import type { Account, AppSetting, Category, CategoryRule, ImportBatch, ImportCandidate, LedgerTransaction, SmsInboxRecord, TransferMergeAudit } from '../types'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -18,6 +18,8 @@ export interface BackupPayload {
   importCandidates: ImportCandidate[]
   categoryRules: CategoryRule[]
   settings: AppSetting[]
+  smsInbox?: SmsInboxRecord[]
+  transferMergeAudits?: TransferMergeAudit[]
 }
 
 export interface EncryptedBackup {
@@ -36,7 +38,7 @@ export async function readAllData(): Promise<BackupPayload> {
     db.accounts.toArray(), db.categories.toArray(), db.transactions.toArray(), db.importBatches.toArray(),
     db.importCandidates.toArray(), db.categoryRules.toArray(), db.settings.toArray()
   ])
-  return { format: 'daily-ledger-backup', version: 1, exportedAt: new Date().toISOString(), accounts, categories, transactions, importBatches, importCandidates, categoryRules, settings }
+  return { format: 'daily-ledger-backup', version: 1, exportedAt: new Date().toISOString(), accounts, categories, transactions, importBatches, importCandidates, categoryRules, settings, smsInbox: await db.smsInbox.toArray(), transferMergeAudits: await db.transferMergeAudits.toArray() }
 }
 
 async function deriveKey(password: string, salt: Uint8Array, iterations: number) {
@@ -69,7 +71,7 @@ export async function decryptBackup(envelope: EncryptedBackup, password: string)
 }
 
 export async function restoreAllData(payload: BackupPayload) {
-  await db.transaction('rw', [db.accounts, db.categories, db.transactions, db.importBatches, db.importCandidates, db.categoryRules, db.settings], async () => {
+  await db.transaction('rw', [db.accounts, db.categories, db.transactions, db.importBatches, db.importCandidates, db.categoryRules, db.settings, db.smsInbox, db.transferMergeAudits], async () => {
     await Promise.all([db.accounts.clear(), db.categories.clear(), db.transactions.clear(), db.importBatches.clear(), db.importCandidates.clear(), db.categoryRules.clear(), db.settings.clear()])
     await db.accounts.bulkPut(payload.accounts)
     await db.categories.bulkPut(payload.categories)
@@ -78,6 +80,9 @@ export async function restoreAllData(payload: BackupPayload) {
     await db.importCandidates.bulkPut(payload.importCandidates)
     await db.categoryRules.bulkPut(payload.categoryRules)
     await db.settings.bulkPut(payload.settings)
+    await db.smsInbox.clear(); await db.transferMergeAudits.clear()
+    await db.smsInbox.bulkPut(payload.smsInbox ?? [])
+    await db.transferMergeAudits.bulkPut(payload.transferMergeAudits ?? [])
   })
 }
 

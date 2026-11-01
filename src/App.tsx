@@ -9,16 +9,18 @@ import { markDuplicates } from './lib/dedupe'
 import { decryptBackup, encryptBackup, readAllData, restoreAllData, transactionsCsv, type EncryptedBackup } from './lib/backup'
 import { matchQuickEntryAccount, readQuickEntryPrefill, type QuickEntryPrefill } from './lib/quickEntry'
 import { prepareImageForOcr } from './lib/ocr'
-import { pairOwnTransfers, ownTransferTarget } from './lib/transfers'
+import { ownTransferTarget } from './lib/transfers'
 import { monthlyAnalysis } from './lib/monthlyReport'
+import { ingestSmsText } from './lib/smsInbox'
 import { canRememberMerchant, needsCategoryReview, suggestCategory, suggestImportCategories } from './lib/categorySuggestions'
 import { isInCustomDateRange, isInSummaryRange, summaryRangeLabels, type SummaryRange } from './lib/dateRange'
 
 const MonthBars = lazy(() => import('./components/Charts').then(module => ({ default: module.MonthBars })))
 const SpendingPie = lazy(() => import('./components/Charts').then(module => ({ default: module.SpendingPie })))
 const ReportCharts = lazy(() => import('./components/Charts').then(module => ({ default: module.ReportCharts })))
+const SmsInboxPage = lazy(() => import('./components/SmsInboxPage'))
 
-type Route = 'home' | 'transactions' | 'add' | 'import' | 'settings' | 'report'
+type Route = 'home' | 'transactions' | 'add' | 'import' | 'settings' | 'report' | 'inbox'
 const navItems: Array<{ route: Route; icon: string; label: string }> = [
   { route: 'home', icon: '⌂', label: '首页' }, { route: 'transactions', icon: '≡', label: '流水' },
   { route: 'add', icon: '+', label: '记账' }, { route: 'import', icon: '⇩', label: '导入' }, { route: 'settings', icon: '⚙', label: '设置' }
@@ -26,7 +28,7 @@ const navItems: Array<{ route: Route; icon: string; label: string }> = [
 
 function currentRoute(): Route {
   const value = location.hash.replace(/^#\/?/, '').split('?')[0]
-  return value === 'report' || navItems.some(item => item.route === value) ? value as Route : 'home'
+  return value === 'report' || value === 'inbox' || navItems.some(item => item.route === value) ? value as Route : 'home'
 }
 
 function go(route: Route) { location.hash = `/${route}` }
@@ -51,9 +53,10 @@ export default function App() {
       {route === 'import' && <ImportPage />}
       {route === 'settings' && <SettingsPage />}
       {route === 'report' && <MonthlyReportPage />}
+      {route === 'inbox' && <Suspense fallback={<p className="page">正在读取短信处理中心…</p>}><SmsInboxPage /></Suspense>}
     </main>
     <nav className="bottom-nav" aria-label="主导航">
-      {navItems.map(item => <button key={item.route} className={route === item.route ? 'active' : ''} onClick={() => go(item.route)}>
+      {navItems.map(item => <button key={item.route} className={route === item.route || (route === 'inbox' && item.route === 'import') ? 'active' : ''} onClick={() => go(item.route)}>
         <span className={item.route === 'add' ? 'add-icon' : ''}>{item.icon}</span><small>{item.label}</small>
       </button>)}
     </nav>
@@ -287,17 +290,8 @@ function ImportPage() {
       const text = await extractTextFromFile(file)
       const smsCandidates = candidatesFromSmsQueue(text, accounts)
       if (smsCandidates.length > 0) {
-        setBusy('正在整理锁屏期间收到的银行短信…')
-        try {
-          const marked = await markDuplicates(await suggestImportCategories(pairOwnTransfers(smsCandidates, accounts)))
-          const firstAccount = marked.find(candidate => candidate.accountId)?.accountId
-          if (firstAccount) setAccountId(firstAccount)
-          setFileMeta({ name: file.name, hash, source: 'bank', smsQueue: true })
-          setCandidates(marked.sort((a, b) => (Date.parse(b.occurredAt) || 0) - (Date.parse(a.occurredAt) || 0)))
-          setSelected(new Set())
-          const duplicates = marked.filter(candidate => candidate.state === 'exact-duplicate').length
-          setMessage(`已重新读取 ${marked.length} 条银行短信，按交易时间倒序显示；已记账 ${duplicates} 条。请手工勾选需要导入的记录。文件修改时间：${new Date(file.lastModified).toLocaleString('zh-CN')}。如果缺少最新短信，请先在“文件”中确认选中的是最新的待处理文件，等待 iCloud 同步后重新选择。`)
-        } finally { setBusy('') }
+        await ingestSmsText(text, { name: file.name, modified: file.lastModified }, accounts)
+        go('inbox')
         return
       }
     }
@@ -386,6 +380,7 @@ function ImportPage() {
   const headers = parsed?.headers ?? []
   return <div className="page">
     <PageHeader eyebrow="本机处理，不上传账单" title="智能导入" />
+    <button className="notice" onClick={() => go('inbox')}>短信处理中心 <b>继续上次处理 →</b></button>
     {reviewItems.length > 0 && <CategoryReview items={reviewItems} categories={categories} onCancel={() => setReviewItems([])} onConfirm={choices => { setReviewItems([]); void confirmImport(choices) }} />}
     <section className="import-hero">
       <div className="scan-orbit">⌁</div><h2>账单、截图或锁屏短信</h2><p>支持锁屏短信队列、支付宝/微信账单、银行卡 CSV，以及照片和截图 OCR。</p>

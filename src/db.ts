@@ -1,5 +1,5 @@
 import Dexie, { type EntityTable } from 'dexie'
-import type { Account, AppSetting, Category, CategoryRule, ImportBatch, ImportCandidate, LedgerTransaction } from './types'
+import type { Account, AppSetting, Category, CategoryRule, ImportBatch, ImportCandidate, LedgerTransaction, SmsInboxRecord, TransferMergeAudit } from './types'
 
 export class LedgerDatabase extends Dexie {
   accounts!: EntityTable<Account, 'id'>
@@ -9,6 +9,8 @@ export class LedgerDatabase extends Dexie {
   importCandidates!: EntityTable<ImportCandidate, 'id'>
   categoryRules!: EntityTable<CategoryRule, 'id'>
   settings!: EntityTable<AppSetting, 'key'>
+  smsInbox!: EntityTable<SmsInboxRecord, 'id'>
+  transferMergeAudits!: EntityTable<TransferMergeAudit, 'id'>
 
   constructor(name = 'daily-ledger') {
     super(name)
@@ -21,6 +23,7 @@ export class LedgerDatabase extends Dexie {
       categoryRules: 'id, [source+keyword], categoryId',
       settings: 'key'
     })
+    this.version(2).stores({ smsInbox: 'id, firstSeen, lastSeen', transferMergeAudits: 'id, createdAt' })
   }
 }
 
