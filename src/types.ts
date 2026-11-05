@@ -83,6 +83,8 @@ export interface ImportCandidate {
 }
 
 export interface SmsInboxRecord {
+  manualStatus?: 'pending' | 'category' | 'deferred' | 'ignored'
+  manualStatusAt?: string
   id: string
   raw: string
   receivedAt?: string

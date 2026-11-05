@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import Dexie from 'dexie'
 import { db, LedgerDatabase } from '../db'
-import { ingestSmsText, prepareInbox, commitInbox, saveInboxDraft, undoTransferMerge } from './smsInbox'
+import { ingestSmsText, prepareInbox, commitInbox, saveInboxDraft, undoTransferMerge, inboxStatus, isActiveInboxStatus, setInboxManualStatus } from './smsInbox'
 import { readAllData, restoreAllData } from './backup'
 import type { Account, LedgerTransaction } from '../types'
 
@@ -22,6 +22,49 @@ beforeEach(async () => {
 })
 
 describe('短信处理中心', () => {
+  it('人工忽略在重读和备份恢复后保留，可恢复处理，状态操作不改变账目', async () => {
+    const expense = '2025-03-02 20:00:00 | 您尾号1111卡20:00消费8元，余额100元。【浦发银行】'
+    await ingest(expense)
+    const id = (await prepareInbox())[0]!.id
+    await setInboxManualStatus(id, 'ignored')
+    await ingest(expense)
+    await restoreAllData(await readAllData())
+    let list = await prepareInbox()
+    let records = await db.smsInbox.toArray(), categories = await db.categories.toArray()
+    expect(inboxStatus(list[0]!, records, categories)).toBe('ignored')
+    expect(isActiveInboxStatus(inboxStatus(list[0]!, records, categories))).toBe(false)
+    await expect(commitInbox([id], list, true)).rejects.toThrow('恢复处理')
+    expect(await db.transactions.count()).toBe(0)
+    await setInboxManualStatus(id, 'pending')
+    list = await prepareInbox(); records = await db.smsInbox.toArray()
+    expect(inboxStatus(list[0]!, records, categories)).toBe('pending')
+    await expect(commitInbox([id], list, true)).rejects.toThrow('分类')
+    await setInboxManualStatus(id, 'category')
+    await saveInboxDraft(id, { categoryId: 'cat-other' }, true)
+    expect((await db.smsInbox.get(id))?.manualStatus).toBeUndefined()
+    list = await prepareInbox()
+    await commitInbox([id], list, true)
+    await expect(setInboxManualStatus(id, 'pending')).rejects.toThrow('已记账')
+    expect(await db.transactions.count()).toBe(1)
+  })
+
+  it('人工暂缓的一侧不参与配对，恢复后可配对；配对卡片同时标记两条原文', async () => {
+    await ingest(outgoing)
+    const id = (await prepareInbox())[0]!.id
+    await setInboxManualStatus(id, 'deferred')
+    await ingest(incoming)
+    let list = await prepareInbox()
+    expect(list).toHaveLength(2)
+    expect(list.every(c => (c.smsOriginals?.length ?? 0) < 2)).toBe(true)
+    await setInboxManualStatus(id, undefined)
+    list = await prepareInbox()
+    expect(list).toHaveLength(1)
+    expect(list[0]!.smsOriginals).toHaveLength(2)
+    await setInboxManualStatus(id, 'ignored')
+    expect((await db.smsInbox.toArray()).every(r => r.manualStatus === 'ignored')).toBe(true)
+    expect(await db.transactions.count()).toBe(0)
+  })
+
   it('先收入后汇出，分文件导入后仍只生成一张转账，重读不重复入账', async () => {
     expect((await ingest(incoming)).added).toBe(1)
     expect((await prepareInbox())[0]!.waitingForPair).toBe(true)

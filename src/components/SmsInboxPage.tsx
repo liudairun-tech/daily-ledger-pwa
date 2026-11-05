@@ -5,10 +5,10 @@ import { dateTimeLocalValue, typeLabel, yuan } from '../lib/format'
 import { extractTextFromFile } from '../lib/importers'
 import { ownTransferTarget } from '../lib/transfers'
 import { needsCategoryReview } from '../lib/categorySuggestions'
-import { commitInbox, inboxStatus, ingestSmsText, prepareInbox, saveInboxDraft, undoTransferMerge, type InboxFilter } from '../lib/smsInbox'
-import type { ImportCandidate, TransactionType } from '../types'
+import { automaticInboxStatus, commitInbox, inboxStatus, ingestSmsText, isActiveInboxStatus, prepareInbox, saveInboxDraft, setInboxManualStatus, undoTransferMerge, type InboxFilter } from '../lib/smsInbox'
+import type { ImportCandidate, SmsInboxRecord, TransactionType } from '../types'
 
-const labels: Record<InboxFilter, string> = { pending: '待处理', category: '待分类', waiting: '待配对', duplicate: '疑似重复 / 待合并', recorded: '已记账', invalid: '异常', all: '全部' }
+const labels: Record<InboxFilter, string> = { pending: '待处理', category: '待分类', waiting: '待配对', duplicate: '疑似重复 / 待合并', recorded: '已记账', invalid: '异常', deferred: '暂缓处理', ignored: '已忽略', all: '全部' }
 const displayTime = (value?: string) => value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString('zh-CN') : '未识别'
 
 export default function SmsInboxPage() {
@@ -23,8 +23,8 @@ export default function SmsInboxPage() {
   let meta: { name: string; modified: number; readAt: string; readCount: number; added: number; latestReceived: string; latestTransaction: string } | undefined
   try { meta = data?.meta ? JSON.parse(data.meta.value) : undefined } catch { /* Old metadata can be ignored without touching the queue. */ }
   const status = (c: ImportCandidate) => inboxStatus(c, records, categories)
-  const visible = candidates.filter(c => filter === 'all' || (filter === 'pending' ? status(c) !== 'recorded' : status(c) === filter))
-  const chosen = candidates.filter(c => selected.has(c.id) && c.state !== 'exact-duplicate')
+  const visible = candidates.filter(c => filter === 'all' || (filter === 'pending' ? isActiveInboxStatus(status(c)) : status(c) === filter))
+  const chosen = candidates.filter(c => selected.has(c.id) && isActiveInboxStatus(status(c)))
   async function ingest(file?: File) {
     if (!file) return
     await run(async () => {
@@ -34,7 +34,7 @@ export default function SmsInboxPage() {
   }
   function beginSave() {
     if (!chosen.length) return setMessage('请先勾选要处理的记录')
-    if (chosen.some(c => (needsCategoryReview(c.type, c.categoryId, categories) && !(c.inboxIds ?? []).every(id => records.find(r => r.id === id)?.reviewedCategory)) || c.waitingForPair || c.state === 'invalid')) return setMessage('请先为所选记录确认分类、处理配对或修正异常')
+    if (chosen.some(c => status(c) === 'category' || (needsCategoryReview(c.type, c.categoryId, categories) && !(c.inboxIds ?? []).every(id => records.find(r => r.id === id)?.reviewedCategory)) || c.waitingForPair || c.state === 'invalid')) return setMessage('请先为所选记录确认分类、处理配对或修正异常')
     setPreview(chosen)
   }
   async function finishSave() {
@@ -48,19 +48,22 @@ export default function SmsInboxPage() {
     {busy && <p role="status">正在处理，请稍候…</p>}{message && <div className="status-message" role="status">{message}</div>}
     <details className="section-card"><summary>登记我的银行卡（转账配对前请确认）</summary><p className="muted">仅勾选属于你自己的卡，名称需带尾号。户名不作为单独合并依据；相同尾号存在多张卡时需手工核对。</p>{accounts.filter(a => a.type === 'bank' && !a.inactive).map(a => <label className="inbox-own-card" key={a.id}><input type="checkbox" disabled={busy} checked={Boolean(a.ownCard)} onChange={e => { const value = e.target.checked; void run(async () => { await db.accounts.update(a.id, { ownCard: value }); await noteDataChange() }) }} />{a.name}</label>)}{!accounts.some(a => a.type === 'bank') && <p>请先在设置中添加银行卡。</p>}</details>
     {meta && <section className="section-card"><h2>最近一次读取</h2><p className="muted">文件：{meta.name}<br />文件修改：{displayTime(new Date(meta.modified).toISOString())}<br />读取时间：{displayTime(meta.readAt)}<br />文件最新接收：{displayTime(meta.latestReceived)}<br />文件最新交易：{displayTime(meta.latestTransaction)}</p><p className="muted">本次读取 {meta.readCount} 条，新增 {meta.added} 条。修改时间与交易时间分别展示；未出现的最新短信，请核对文件原文及 iCloud 同步。</p></section>}
-    <section className="section-card"><h2>处理总览</h2><p className="muted">累计保存 {records.length} 条原短信，配对后共 {candidates.length} 张处理卡片；配对卡片含两条原文。</p><div className="inbox-filters">{(Object.keys(labels) as InboxFilter[]).map(key => <button key={key} aria-pressed={filter === key} className={filter === key ? 'selected' : ''} onClick={() => setFilter(key)}>{labels[key]} {key === 'all' ? candidates.length : key === 'pending' ? candidates.filter(c => status(c) !== 'recorded').length : candidates.filter(c => status(c) === key).length}</button>)}</div></section>
+    <section className="section-card"><h2>处理总览</h2><p className="muted">累计保存 {records.length} 条原短信，配对后共 {candidates.length} 张处理卡片；配对卡片含两条原文。</p><p className="muted">待处理包含待分类、待配对等需要处理的记录。手工设为暂缓或忽略后，会移出待处理；原文保留，可随时恢复。修改处理状态不会新增或删除账目。</p><div className="inbox-filters">{(Object.keys(labels) as InboxFilter[]).map(key => <button key={key} aria-pressed={filter === key} className={filter === key ? 'selected' : ''} onClick={() => setFilter(key)}>{labels[key]} {key === 'all' ? candidates.length : key === 'pending' ? candidates.filter(c => isActiveInboxStatus(status(c))).length : candidates.filter(c => status(c) === key).length}</button>)}</div></section>
     {!data && <p>正在读取本机待处理记录…</p>}
     {data && !visible.length && <p className="muted">这个分组没有记录。已记账默认折叠，可切换“已记账”或“全部”查看。</p>}
     <div className="candidate-list">{visible.map(c => {
       const entry = records.find(r => r.id === c.id)
       const recorded = status(c) === 'recorded'
+      const active = isActiveInboxStatus(status(c))
+      const manualStatus = (c.inboxIds ?? [c.id]).map(id => records.find(r => r.id === id)?.manualStatus).find(Boolean)
       const ownTarget = ownTransferTarget(c.raw.sms ?? '', c.accountId, accounts.filter(a => a.ownCard))
       const possibleTargets = ownTarget ? candidates.filter(i => i.type === 'income' && i.accountId === ownTarget.id && i.amountCents === c.amountCents && i.id !== c.id && !i.mergeIds?.length && status(i) !== 'recorded') : []
       return <article className={`candidate candidate-${c.type} ${c.state}`} key={c.id}>
-        <input aria-label={`选择${c.merchant}`} type="checkbox" checked={selected.has(c.id) && !recorded} disabled={busy || recorded || c.waitingForPair || c.state === 'invalid'} onChange={e => setSelected(old => { const next = new Set(old); e.target.checked ? next.add(c.id) : next.delete(c.id); return next })} />
+        <input aria-label={`选择${c.merchant}`} type="checkbox" checked={selected.has(c.id) && active} disabled={busy || !active || c.waitingForPair || c.state === 'invalid'} onChange={e => setSelected(old => { const next = new Set(old); e.target.checked ? next.add(c.id) : next.delete(c.id); return next })} />
         <div className="candidate-main"><div><b>{c.merchant}</b><strong className="candidate-direction">{c.type === 'expense' ? '−' : c.type === 'income' || c.type === 'refund' ? '+' : ''}{yuan(c.amountCents)}</strong></div><p className="muted">{displayTime(c.occurredAt)} · {labels[status(c)]}</p>
           <p className="muted">{accounts.find(a => a.id === c.accountId)?.name ?? '未匹配账户'}{c.targetAccountId ? ` → ${accounts.find(a => a.id === c.targetAccountId)?.name ?? '未匹配转入账户'}` : ''}</p>
           {c.issue && <em>{c.issue}</em>}
+          {!recorded && <div className="inbox-fields"><label>人工处理状态<select aria-label={`人工处理状态：${c.merchant}`} disabled={busy} value={manualStatus ?? ''} onChange={e => { const value = (e.target.value || undefined) as SmsInboxRecord['manualStatus']; void run(async () => { await setInboxManualStatus(c.id, value); setSelected(new Set()); setMessage(value ? `已设为${labels[value]}。可在对应分组或“全部”中查看和恢复。` : '已恢复自动判断。') }) }}><option value="">自动判断</option><option value="pending">需要处理（待处理）</option>{c.type !== 'transfer' && <option value="category">需要重新分类（待分类）</option>}<option value="deferred">暂缓处理</option><option value="ignored">忽略，不入账</option></select></label><p className="muted">系统判断：{labels[automaticInboxStatus(c, records, categories)]}{manualStatus ? ' · 已人工标记' : ''}。设为待处理仍需核对分类、配对和异常；确认保存后才会成为已记账。</p></div>}
           <details><summary>展开短信原文 / 识别依据</summary>{(c.smsOriginals ?? [c.raw.sms ?? c.note]).map((raw, index) => <pre className="inbox-original" key={index}>{raw}</pre>)}<p className="muted">接收时间：{displayTime(entry?.receivedAt)}。分类依据为本机关键词或已保存商户规则；时间优先取短信交易时间，其次取接收时间。</p></details>
           {!recorded && <details><summary>核对分类 / 修改识别结果</summary><div className="inbox-fields">
             <label>分类<select aria-label="确认分类" value={needsCategoryReview(c.type, c.categoryId, categories) && !entry?.reviewedCategory ? '' : c.categoryId ?? ''} disabled={busy || c.type === 'transfer'} onChange={e => { const value = e.target.value; void run(() => saveInboxDraft(c.id, { categoryId: value }, true)) }}><option value="">请手工确认分类</option>{categories.filter(k => !k.archived && k.kind === (c.type === 'income' ? 'income' : 'expense')).map(k => <option key={k.id} value={k.id}>{k.emoji} {k.name}</option>)}</select></label>

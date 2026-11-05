@@ -7,14 +7,34 @@ import { localDateKey, parseAmountToCents } from './format'
 import { normalizeText, makeFingerprint } from './fingerprint'
 import { suggestImportCategories, needsCategoryReview } from './categorySuggestions'
 
-export type InboxFilter = 'pending' | 'category' | 'waiting' | 'duplicate' | 'recorded' | 'invalid' | 'all'
-export function inboxStatus(c: ImportCandidate, records: SmsInboxRecord[], categories: Parameters<typeof needsCategoryReview>[2]): InboxFilter {
+export type InboxFilter = 'pending' | 'category' | 'waiting' | 'duplicate' | 'recorded' | 'invalid' | 'deferred' | 'ignored' | 'all'
+export function automaticInboxStatus(c: ImportCandidate, records: SmsInboxRecord[], categories: Parameters<typeof needsCategoryReview>[2]): InboxFilter {
   if (c.state === 'exact-duplicate') return 'recorded'
   if (c.waitingForPair) return 'waiting'
   if (c.state === 'invalid') return 'invalid'
   if (c.state === 'possible-duplicate' || c.mergeIds?.length) return 'duplicate'
   if (needsCategoryReview(c.type, c.categoryId, categories) && !(c.inboxIds ?? []).every(id => records.find(r => r.id === id)?.reviewedCategory)) return 'category'
   return 'pending'
+}
+
+export function inboxStatus(c: ImportCandidate, records: SmsInboxRecord[], categories: Parameters<typeof needsCategoryReview>[2]): InboxFilter {
+  const automatic = automaticInboxStatus(c, records, categories)
+  if (automatic === 'recorded') return automatic
+  const decisions = (c.inboxIds ?? [c.id]).map(id => records.find(r => r.id === id)?.manualStatus)
+  return decisions.find(s => s === 'ignored') ?? decisions.find(s => s === 'deferred') ?? decisions.find(Boolean) ?? automatic
+}
+
+export const isActiveInboxStatus = (status: InboxFilter) => status !== 'recorded' && status !== 'deferred' && status !== 'ignored'
+
+export async function setInboxManualStatus(candidateId: string, value: SmsInboxRecord['manualStatus']) {
+  if (value && !['pending', 'category', 'deferred', 'ignored'].includes(value)) throw new Error('无效的处理状态')
+  await db.transaction('rw', [db.smsInbox, db.transactions, db.accounts, db.categories, db.categoryRules, db.settings], async () => {
+    const candidate = (await prepareInbox()).find(c => c.id === candidateId)
+    if (!candidate || candidate.state === 'exact-duplicate') throw new Error('记录已记账或已变化，请刷新后核对')
+    if (value === 'category' && candidate.type === 'transfer') throw new Error('转账无需收支分类')
+    for (const id of candidate.inboxIds ?? [candidate.id]) await db.smsInbox.update(id, { manualStatus: value, manualStatusAt: new Date().toISOString() })
+    await noteDataChange()
+  })
 }
 
 function parseEntry(raw: string, receivedAt: string | undefined, accounts: Account[]): ImportCandidate {
@@ -77,15 +97,18 @@ export async function prepareInbox() {
       history.push({ ...c, id: `history-${tx.id}-${history.length}`, inboxIds: [] })
     }
   }
-  const all = [...base, ...history]
+  // Deferred/ignored originals remain visible and restorable, but cannot silently
+  // become part of a newly paired active transfer.
+  const inactiveIds = new Set(records.filter(r => r.manualStatus === 'deferred' || r.manualStatus === 'ignored').map(r => r.id))
+  const all = [...base.filter(c => !inactiveIds.has(c.id)), ...history]
   const consumed = new Set<string>(), forced: ImportCandidate[] = []
-  for (const out of base.filter(c => c.raw.pairWith)) {
+  for (const out of all.filter(c => c.raw.pairWith)) {
     const target = all.find(c => c.id === out.raw.pairWith)
     if (!target || consumed.has(out.id) || consumed.has(target.id)) continue
     const [pair] = pairOwnTransfers([out, target], ownAccounts)
     if (pair?.type === 'transfer' && pair.smsOriginals?.length === 2) { forced.push(pair); consumed.add(out.id); consumed.add(target.id) }
   }
-  const paired = [...forced, ...pairOwnTransfers(all.filter(c => !consumed.has(c.id)), ownAccounts)].filter(c => c.inboxIds?.length)
+  const paired = [...forced, ...pairOwnTransfers(all.filter(c => !consumed.has(c.id)), ownAccounts), ...base.filter(c => inactiveIds.has(c.id))].filter(c => c.inboxIds?.length)
   const result = paired.map(c => {
     const rawKeys = (c.smsOriginals ?? [c.raw.sms ?? '']).map(normalizeText)
     const linked = existing.filter(t => localDateKey(t.occurredAt) === localDateKey(c.occurredAt) && originalsOf(t).some(key => rawKeys.includes(key)))
@@ -115,7 +138,7 @@ export async function saveInboxDraft(id: string, patch: Partial<ImportCandidate>
   const candidate = { ...old.candidate, ...patch, manuallyEdited: true }
   candidate.state = candidate.amountCents > 0 && candidate.accountId && Number.isFinite(Date.parse(candidate.occurredAt)) ? 'ready' : 'invalid'
   const reviewedCategory = categoryReviewed || (patch.type && patch.type !== old.candidate.type ? false : old.reviewedCategory)
-  await db.smsInbox.update(id, { candidate, reviewedCategory, standalone: standalone || old.standalone })
+  await db.smsInbox.update(id, { candidate, reviewedCategory, standalone: standalone || old.standalone, ...(categoryReviewed && old.manualStatus === 'category' ? { manualStatus: undefined, manualStatusAt: new Date().toISOString() } : {}) })
   await noteDataChange()
 }
 
@@ -128,6 +151,9 @@ export async function commitInbox(ids: string[], expected: ImportCandidate[], me
     const now = new Date().toISOString(), batchId = crypto.randomUUID()
     const used = new Set<string>()
     for (const c of chosen) {
+      const status = inboxStatus(c, records, categories)
+      if (!isActiveInboxStatus(status)) throw new Error('暂缓、忽略或已记账的记录不能入账，请先恢复处理')
+      if (status === 'category') throw new Error('请先完成分类并恢复自动判断或设为待处理')
       if (c.waitingForPair || c.state === 'invalid' || c.state === 'exact-duplicate') throw new Error('所选记录包含待配对、异常或已记账项目，请重新核对')
       if (needsCategoryReview(c.type, c.categoryId, categories) && !(c.inboxIds ?? []).every(id => records.find(r => r.id === id)?.reviewedCategory)) throw new Error('请先手工确认待分类记录')
       if (!c.accountId || (c.type === 'transfer' && (!c.targetAccountId || c.accountId === c.targetAccountId))) throw new Error('请先选择有效转出、转入账户')
