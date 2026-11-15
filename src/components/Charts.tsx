@@ -57,8 +57,29 @@ export function SpendingPie({ transactions, categories, rangeLabel }: { transact
     totals.set(key, (totals.get(key) ?? 0) + (t.type === 'refund' ? -t.amountCents : t.amountCents))
   })
   const data = [...totals.entries()].filter(([, value]) => value > 0).map(([name, value]) => ({ name, value: value / 100 }))
-  const option = { tooltip: { trigger: 'item', formatter: '{b}<br/>¥{c} · {d}%' }, series: [{ type: 'pie', radius: ['52%', '76%'], padAngle: 3, itemStyle: { borderRadius: 7 }, label: { show: false }, data }] }
-  return data.length ? <Chart option={option} label={`${rangeLabel}支出分类占比`} /> : <div className="empty-chart">{rangeLabel}还没有支出</div>
+  const colors = ['#37a477', '#73bfd8', '#91cc75', '#fac858', '#ee6666', '#5470c6', '#9a60b4', '#ea7ccc', '#3ba8a0']
+  const total = data.reduce((sum, item) => sum + item.value, 0)
+  const percent = (value: number) => `${(value / total * 100).toFixed(1)}%`
+  const option = {
+    animation: false,
+    color: colors,
+    tooltip: { trigger: 'item', formatter: '{b}<br/>¥{c} · {d}%' },
+    series: [{
+      type: 'pie', radius: ['34%', '54%'], padAngle: 3, percentPrecision: 1,
+      itemStyle: { borderRadius: 7 },
+      label: { show: true, position: 'outside', formatter: (item: { name?: string; value?: unknown }) => `${item.name}\n${percent(Number(item.value))}`, fontSize: 11, lineHeight: 16, color: '#8393a4', alignTo: 'edge', edgeDistance: 4, bleedMargin: 2 },
+      labelLine: { show: true, length: 10, length2: 6 },
+      labelLayout: { hideOverlap: true },
+      data
+    }]
+  }
+  return data.length ? <div className="spending-chart">
+    <Chart option={option} label={`${rangeLabel}支出分类占比：${data.map(item => `${item.name} ${percent(item.value)}`).join('，')}`} />
+    <ul className="spending-legend" aria-label="分类支出明细">{data.map((item, index) => <li key={item.name}>
+      <i aria-hidden="true" style={{ backgroundColor: colors[index % colors.length] }} />
+      <span>{item.name}</span><strong>{yuan(Math.round(item.value * 100))}<small>{percent(item.value)}</small></strong>
+    </li>)}</ul>
+  </div> : <div className="empty-chart">{rangeLabel}还没有支出</div>
 }
 
 export function MonthBars({ transactions, range }: { transactions: LedgerTransaction[]; range: SummaryRange }) {
