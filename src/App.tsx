@@ -444,7 +444,7 @@ function SettingsPage() {
   const restoreRef = useRef<HTMLInputElement>(null)
   const [password, setPassword] = useState(''), [message, setMessage] = useState('')
   const [newAccount, setNewAccount] = useState(''), [accountType, setAccountType] = useState<AccountType>('bank')
-  const [newCategory, setNewCategory] = useState('')
+  const [newCategory, setNewCategory] = useState<Record<Category['kind'], string>>({ expense: '', income: '' })
 
   async function exportEncrypted() {
     try {
@@ -485,16 +485,17 @@ function SettingsPage() {
     if (!confirm(`确定删除没有流水的账户“${account.name}”吗？`)) return
     await db.accounts.delete(account.id); await noteDataChange(); setMessage('账户已删除。')
   }
-  async function addCategory() {
-    if (!newCategory.trim()) return
-    await db.categories.add({ id: crypto.randomUUID(), name: newCategory.trim(), emoji: '🏷️', color: '#64748b', kind: 'expense', archived: false }); await noteDataChange(); setNewCategory(''); setMessage('支出分类已添加。')
+  async function addCategory(kind: Category['kind']) {
+    const name = newCategory[kind].trim()
+    if (!name) return
+    await db.categories.add({ id: crypto.randomUUID(), name, emoji: '🏷️', color: '#64748b', kind, archived: false }); await noteDataChange(); setNewCategory(value => ({ ...value, [kind]: '' })); setMessage(`${kind === 'income' ? '收入' : '支出'}分类已添加。`)
   }
   async function editCategory(category: Category) {
     const name = prompt('请输入分类名称', category.name)
     if (name === null || !name.trim()) return
     const emoji = prompt('请输入一个分类图标（可以直接输入 Emoji）', category.emoji)
     if (emoji === null) return
-    await db.categories.update(category.id, { name: name.trim(), emoji: emoji.trim() || '🏷️' }); await noteDataChange(); setMessage('支出分类已修改。')
+    await db.categories.update(category.id, { name: name.trim(), emoji: emoji.trim() || '🏷️' }); await noteDataChange(); setMessage(`${category.kind === 'income' ? '收入' : '支出'}分类已修改。`)
   }
   async function toggleCategory(category: Category) {
     await db.categories.update(category.id, { archived: !category.archived }); await noteDataChange(); setMessage(category.archived ? '分类已重新显示。' : '分类已隐藏，历史流水仍会保留。')
@@ -506,7 +507,7 @@ function SettingsPage() {
     ])
     if (transactionCount + ruleCount > 0) return setMessage(`“${category.name}”已被流水或分类规则使用，不能删除；可以改名或隐藏。`)
     if (!confirm(`确定删除未使用的分类“${category.name}”吗？`)) return
-    await db.categories.delete(category.id); await noteDataChange(); setMessage('支出分类已删除。')
+    await db.categories.delete(category.id); await noteDataChange(); setMessage(`${category.kind === 'income' ? '收入' : '支出'}分类已删除。`)
   }
   return <div className="page settings-page">
     <PageHeader eyebrow="数据只属于你" title="设置与备份" />
@@ -523,11 +524,11 @@ function SettingsPage() {
       <div className="manage-list">{accounts.map(a => <div key={a.id} className={`manage-item ${a.inactive ? 'is-muted' : ''}`}><div><b>{a.name}</b><small>{a.inactive ? '已停用' : '使用中'}</small></div><div className="manage-actions"><button onClick={() => void renameAccount(a)}>改名</button><button onClick={() => void toggleAccount(a)}>{a.inactive ? '启用' : '停用'}</button><button className="danger-mini" onClick={() => void deleteAccount(a)}>删除</button></div></div>)}</div>
       <div className="inline-form"><input value={newAccount} onChange={e => setNewAccount(e.target.value)} placeholder="新账户名称" /><select value={accountType} onChange={e => setAccountType(e.target.value as AccountType)}><option value="bank">银行卡</option><option value="cash">现金</option><option value="other">其他</option></select><button onClick={() => void addAccount()}>添加</button></div>
     </section>
-    <section className="section-card"><div className="section-title"><h2>支出分类</h2><span>{categories.filter(c => c.kind === 'expense' && !c.archived).length} 个</span></div>
+    {(['expense', 'income'] as const).map(kind => <section className="section-card" key={kind} aria-label={`${kind === 'income' ? '收入' : '支出'}分类管理`}><div className="section-title"><h2>{kind === 'income' ? '收入' : '支出'}分类</h2><span>{categories.filter(c => c.kind === kind && !c.archived).length} 个</span></div>
       <p className="muted">名称和图标都可以修改；有历史流水的分类可隐藏，但不会被误删。</p>
-      <div className="manage-list">{categories.filter(c => c.kind === 'expense').map(c => <div key={c.id} className={`manage-item ${c.archived ? 'is-muted' : ''}`}><div><b>{c.emoji} {c.name}</b><small>{c.archived ? '已隐藏' : '显示中'}</small></div><div className="manage-actions"><button onClick={() => void editCategory(c)}>修改</button><button onClick={() => void toggleCategory(c)}>{c.archived ? '显示' : '隐藏'}</button><button className="danger-mini" onClick={() => void deleteCategory(c)}>删除</button></div></div>)}</div>
-      <div className="inline-form"><input value={newCategory} onChange={e => setNewCategory(e.target.value)} placeholder="新分类名称" /><button onClick={() => void addCategory()}>添加</button></div>
-    </section>
+      <div className="manage-list">{categories.filter(c => c.kind === kind).map(c => <div key={c.id} className={`manage-item ${c.archived ? 'is-muted' : ''}`}><div><b>{c.emoji} {c.name}</b><small>{c.archived ? '已隐藏' : '显示中'}</small></div><div className="manage-actions"><button onClick={() => void editCategory(c)}>修改</button><button onClick={() => void toggleCategory(c)}>{c.archived ? '显示' : '隐藏'}</button><button className="danger-mini" onClick={() => void deleteCategory(c)}>删除</button></div></div>)}</div>
+      <div className="inline-form"><input value={newCategory[kind]} onChange={e => setNewCategory(value => ({ ...value, [kind]: e.target.value }))} placeholder={`新${kind === 'income' ? '收入' : '支出'}分类名称`} aria-label={`新${kind === 'income' ? '收入' : '支出'}分类名称`} /><button onClick={() => void addCategory(kind)}>添加</button></div>
+    </section>)}
     <section className="section-card about-card"><h2>锁屏短信自动收集</h2><p>把短信自动化设为“立即运行”，动作改为把短信正文追加到 iCloud Drive 的 <code>Shortcuts/每日账本待处理.txt</code>。开启快捷指令的“锁定时允许运行”后，锁屏期间不再尝试打开网页，而是先保存短信。</p><p>解锁后打开“导入”，选择该 TXT 文件即可批量核对。账户名称包含银行名或卡号后四位时会自动匹配；已经入账的旧短信会自动拦截。</p></section>
     <section className="section-card about-card"><h2>操作按钮快捷记账</h2><p>操作按钮仍可打开：<code>/#/add?amount=28.5&amp;account=wechat</code>。账户可填写 <code>alipay</code>、<code>wechat</code> 或 <code>bank</code>；这个入口适合手机已解锁时使用。</p></section>
     <section className="section-card about-card"><h2>关于每日账本</h2><p>离线优先的个人收支 PWA。它不能直接读取支付宝、微信或其他 App 通知；快捷指令仅把你主动输入的内容或符合条件的银行短信交给应用。</p></section>
